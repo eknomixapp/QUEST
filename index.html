@@ -2917,11 +2917,13 @@ async function saveReportMapping(reportKey, mapping) {
 
 /** Registry of reports configurable via the mapping engine — shown centrally under
  *  Settings -> Reports & Mapping (Option 2), and each report also exposes its own
- *  "⚙ Mapping" control (Option 1) which edits the very same saved mapping. */
+ *  "⚙ Mapping" control (Option 1) which edits the very same saved mapping.
+ *  Outstanding Receivables/Payables are NOT here — unlike these voucher-type-mapped
+ *  reports, they always draw strictly from the Sundry Debtors/Sundry Creditors group
+ *  and classify each ledger by its actual balance direction (see partyLedgerBalances),
+ *  so there's nothing to configure and no "unmapped = shows every ledger" trap. */
 const REPORT_MAPPING_REGISTRY = [
   { key: 'voucherRegister', label: 'Voucher Register (Centralized)', hint: 'The full double-entry detail behind every other mapped report. Leave unmapped to see everything.', defaultVoucherTypes: [] },
-  { key: 'receivablesMapped', label: 'Outstanding Receivables', hint: 'Typically mapped to the Trade Receivables / Sundry Debtors group, with Sales + Receipt (+ Journal) vouchers.', defaultVoucherTypes: ['Sales Voucher', 'Receipt Voucher', 'Journal Voucher'] },
-  { key: 'payablesMapped', label: 'Outstanding Payables', hint: 'Typically mapped to the Trade Payables / Sundry Creditors group, with Purchase + Payment (+ Journal) vouchers.', defaultVoucherTypes: ['Purchase Voucher', 'Payment Voucher', 'Journal Voucher'] },
   { key: 'salesRegisterMapped', label: 'Sales Register (Mapped)', hint: 'Typically mapped to the Sales / Revenue group, with Sales vouchers only.', defaultVoucherTypes: ['Sales Voucher'] },
   { key: 'purchaseRegisterMapped', label: 'Purchase Register (Mapped)', hint: 'Typically mapped to Purchase / Expense / Inventory accounts, with Purchase vouchers only.', defaultVoucherTypes: ['Purchase Voucher'] },
   { key: 'cashBankMapped', label: 'Cash / Bank Report (Mapped)', hint: 'Typically mapped to Cash & Bank ledgers, with Receipt + Payment + Contra (+ Journal) vouchers.', defaultVoucherTypes: ['Receipt Voucher', 'Payment Voucher', 'Contra Voucher', 'Journal Voucher'] }
@@ -9687,7 +9689,7 @@ async function renderPartnersAppropriation(container) {
     </div>
 
     <div class="grid grid-4" style="margin-bottom:16px">
-      ${kpi('Sales', salesTotal, 'teal', dateRouteLink('report-sales-register-mapped', from, to), '📈')}
+      ${kpi('Sales (excl. tax)', salesTotal, 'teal', dateRouteLink('report-sales-register-mapped', from, to), '📈')}
       ${kpi('Other Income', otherIncome, 'blue', dateRouteLink('report-pl', from, to), '💵')}
       ${kpi('Expenses (all types)', pl.totalExpense, 'rose', dateRouteLink('report-pl', from, to), '💸')}
       ${kpi('Net Profit', pl.netProfit, pl.netProfit >= 0 ? 'teal' : 'red', dateRouteLink('report-pl', from, to), pl.netProfit >= 0 ? '📈' : '📉')}
@@ -12855,7 +12857,7 @@ async function renderDashboard(container) {
           </div>
         </div>
       </div>
-      ${kpi('Sales — ' + period, salesThisMonth, 'teal', dateRouteLink('report-sales-register-mapped', from, to), '📈')}
+      ${kpi('Sales (excl. tax) — ' + period, salesThisMonth, 'teal', dateRouteLink('report-sales-register-mapped', from, to), '📈')}
       ${kpi('Expenses — ' + period, pl.totalExpense, 'rose', dateRouteLink('report-pl', from, to), '💸')}
       ${kpi('Gross Profit — ' + period, grossProfit, grossProfit >= 0 ? 'teal' : 'red', dateRouteLink('report-pl', from, to), grossProfit >= 0 ? '📈' : '📉', true)}
     </div>
@@ -12994,6 +12996,51 @@ function kpi(label, value, color, routeLink, icon, big, sublabel) {
  *  totals are computed straight from ledger balances, the same way the Balance Sheet is, using
  *  the exact ledger each customer/supplier actually posts to (their own, or the shared control
  *  ledger) — matching the resolution logic used when invoices/purchases are posted. */
+/** The single source of truth for "who owes us" vs "who we owe" — used by the Dashboard KPIs,
+ *  the Receivables/Payables drill-down reports, and computeReceivablesLedgerTotal/
+ *  computePayablesLedgerTotal below, so all three always show the exact same figures.
+ *
+ *  Two things this deliberately does NOT do, because both are common causes of a party ledger
+ *  looking like it's in the wrong report:
+ *   1. It never nets different customers/suppliers against each other — one customer owing
+ *      5,000 and another being 2,000 in credit are two separate rows, never collapsed into a
+ *      single 3,000 net figure. Every row here is one ledger's own balance.
+ *   2. It classifies each ledger by its ACTUAL balance direction, not by which of the two
+ *      groups it nominally sits in. A customer (Sundry Debtors) who has overpaid or paid an
+ *      advance carries a CREDIT balance — the business owes THEM — so that ledger is a
+ *      Payable, not a Receivable, exactly like Tally/Zoho present it. Symmetrically, a
+ *      supplier (Sundry Creditors) paid in advance carries a DEBIT balance and is a
+ *      Receivable. Rows reclassified this way are flagged (`reclassified: true`) so the
+ *      report can call them out instead of silently mixing them in. */
+async function partyLedgerBalances(asOfDate, costCentreId) {
+  const [ledgers, allGroups] = await Promise.all([localDB.getAll('ledgers'), localDB.getAll('ledgerGroups')]);
+  const debtorsGroup = allGroups.find((g) => g.name === 'Sundry Debtors');
+  const creditorsGroup = allGroups.find((g) => g.name === 'Sundry Creditors');
+  const debtorsIds = debtorsGroup ? new Set(groupAndDescendantIds(debtorsGroup.id, allGroups)) : new Set();
+  const creditorsIds = creditorsGroup ? new Set(groupAndDescendantIds(creditorsGroup.id, allGroups)) : new Set();
+  const groupsById2 = new Map(allGroups.map((g) => [g.id, g]));
+
+  const receivables = [], payables = [];
+  for (const l of ledgers) {
+    const inDebtors = debtorsIds.has(l.groupId), inCreditors = creditorsIds.has(l.groupId);
+    if (!inDebtors && !inCreditors) continue; // not a party ledger at all — leave it out entirely
+    const bal = await ledgerBalance(l.id, { to: asOfDate, costCentreId });
+    if (bal.debit === 0 && bal.credit === 0) continue; // no activity — nothing to show either side
+    const net = round2(bal.debit - bal.credit); // positive = net debit balance, negative = net credit balance
+    const groupName = groupsById2.get(l.groupId)?.name || (inDebtors ? 'Sundry Debtors' : 'Sundry Creditors');
+    const row = { ledgerId: l.id, name: l.name, groupId: l.groupId, groupName, debit: bal.debit, credit: bal.credit };
+    if (net > 0.005) receivables.push({ ...row, balance: net, reclassified: inCreditors });
+    else if (net < -0.005) payables.push({ ...row, balance: -net, reclassified: inDebtors });
+  }
+  receivables.sort((a, b) => b.balance - a.balance);
+  payables.sort((a, b) => b.balance - a.balance);
+  return {
+    receivables, payables,
+    totalReceivables: round2(sum(receivables.map((r) => r.balance))),
+    totalPayables: round2(sum(payables.map((r) => r.balance)))
+  };
+}
+
 /** Total Receivables — a real GROUP balance: debit minus credit, summed across EVERY ledger
  *  under Sundry Debtors (and any sub-group under it, e.g. a custom "Clients" grouping), not just
  *  ledgers that happen to be linked to a Customer master record. The previous version only ever
@@ -13002,36 +13049,18 @@ function kpi(label, value, color, routeLink, icon, big, sublabel) {
  *  to a customer had its balance silently excluded from this figure entirely, even though it was
  *  a completely real receivable. Debit − credit is the correct sign for an asset-nature group;
  *  this is what "a ledger or group balance is the difference between debit and credit entries"
- *  means applied to Sundry Debtors specifically. */
+ *  means applied to Sundry Debtors specifically. Now routed through partyLedgerBalances() so this
+ *  headline figure always matches the Receivables drill-down report exactly, row for row. */
 async function computeReceivablesLedgerTotal(asOfDate, costCentreId) {
-  const [ledgers, allGroups] = await Promise.all([localDB.getAll('ledgers'), localDB.getAll('ledgerGroups')]);
-  const debtorsGroup = allGroups.find((g) => g.name === 'Sundry Debtors');
-  if (!debtorsGroup) return 0;
-  const debtorsGroupIds = new Set(groupAndDescendantIds(debtorsGroup.id, allGroups));
-  const debtorsLedgerIds = ledgers.filter((l) => debtorsGroupIds.has(l.groupId)).map((l) => l.id);
-  let total = 0;
-  for (const lid of debtorsLedgerIds) {
-    const bal = await ledgerBalance(lid, { to: asOfDate, costCentreId });
-    total += bal.net; // Asset-nature: debit − credit is the "owed to us" balance
-  }
-  return round2(total);
+  return (await partyLedgerBalances(asOfDate, costCentreId)).totalReceivables;
 }
 
 /** Total Payables — same fix, same reasoning, for Sundry Creditors: every ledger under that
  *  group and its sub-groups, not just ones linked to a Supplier master. Credit − debit is the
- *  correct sign for a liability-nature group. */
+ *  correct sign for a liability-nature group. Routed through partyLedgerBalances() for the same
+ *  reason as computeReceivablesLedgerTotal above. */
 async function computePayablesLedgerTotal(asOfDate, costCentreId) {
-  const [ledgers, allGroups] = await Promise.all([localDB.getAll('ledgers'), localDB.getAll('ledgerGroups')]);
-  const creditorsGroup = allGroups.find((g) => g.name === 'Sundry Creditors');
-  if (!creditorsGroup) return 0;
-  const creditorsGroupIds = new Set(groupAndDescendantIds(creditorsGroup.id, allGroups));
-  const creditorsLedgerIds = ledgers.filter((l) => creditorsGroupIds.has(l.groupId)).map((l) => l.id);
-  let total = 0;
-  for (const lid of creditorsLedgerIds) {
-    const bal = await ledgerBalance(lid, { to: asOfDate, costCentreId });
-    total += round2(bal.credit - bal.debit); // Liability-nature: credit − debit is what we owe
-  }
-  return round2(total);
+  return (await partyLedgerBalances(asOfDate, costCentreId)).totalPayables;
 }
 
 /** Sales for a period, from the ledger side (credit movement on every ledger under the "Sales
@@ -17790,92 +17819,81 @@ async function renderVoucherRegister(container) {
   bindDeepLinks(container);
 }
 
-/** Outstanding Receivables driven entirely by the mapping engine (§6 of the accounting
- *  architecture) — Outstanding Receivable = mapped Debits - mapped Credits, computed straight
- *  from the Voucher Register rather than from a separately maintained balance. Configure the
- *  Ledger/Group + Voucher Type mapping via the ⚙ button here, or centrally under
- *  Settings -> Reports & Mapping. Sits alongside the existing invoice-level Receivables Ageing
- *  report, which stays available for per-invoice ageing detail. */
-async function renderReceivablesMapped(container) {
-  const mapping = await getReportMapping('receivablesMapped');
-  const [lines, ledgers] = await Promise.all([getMappedVoucherLines(mapping), localDB.getAll('ledgers')]);
-  const ledgerName = new Map(ledgers.map((l) => [l.id, l.name]));
-
-  const byLedger = new Map();
-  lines.forEach((l) => {
-    const agg = byLedger.get(l.ledgerId) || { debit: 0, credit: 0 };
-    agg.debit += l.debit; agg.credit += l.credit;
-    byLedger.set(l.ledgerId, agg);
-  });
-  const rows = [...byLedger.entries()]
-    .map(([ledgerId, agg]) => ({ ledgerId, name: ledgerName.get(ledgerId) || 'Unknown Ledger', debit: round2(agg.debit), credit: round2(agg.credit), balance: round2(agg.debit - agg.credit) }))
-    .filter((r) => r.debit !== 0 || r.credit !== 0)
-    .sort((a, b) => b.balance - a.balance);
-  const total = round2(sum(rows.map((r) => r.balance)));
+/** Outstanding Receivables — every ledger under Sundry Debtors (or Sundry Creditors, if that
+ *  specific ledger's actual balance has flipped to a debit — see partyLedgerBalances), each
+ *  shown as its OWN row with its own Debit/Credit/Net Balance. Never nets different customers
+ *  against each other. Grouped by the ledger's immediate Chart-of-Accounts group as clickable
+ *  filter buttons, mirroring how Tally/Zoho let you drill from a Group Summary into one group's
+ *  ledgers. Sits alongside the existing invoice-level Receivables Ageing report, which stays
+ *  available for per-invoice "days overdue" detail. */
+async function renderReceivablesMapped(container, selectedGroup) {
+  const { receivables, totalReceivables } = await partyLedgerBalances();
+  const groupNames = [...new Set(receivables.map((r) => r.groupName))].sort();
+  const activeGroup = selectedGroup && groupNames.includes(selectedGroup) ? selectedGroup : null;
+  const rows = activeGroup ? receivables.filter((r) => r.groupName === activeGroup) : receivables;
+  const reclassifiedCount = receivables.filter((r) => r.reclassified).length;
   const totalDebit = round2(sum(rows.map((r) => r.debit)));
   const totalCredit = round2(sum(rows.map((r) => r.credit)));
+  const rowsTotal = round2(sum(rows.map((r) => r.balance)));
 
   container.innerHTML = `
-    ${await reportHeader('Outstanding Receivables (Mapped)', `Ledger/Group + Voucher Type mapping — ${fmtMoney(total)} outstanding (net of both invoices and receipts)`, '💰')}
-    <div class="no-print" style="margin-bottom:12px;display:flex;gap:8px">
-      <button class="btn btn-ghost btn-sm" id="rm-mapping-btn">⚙ Mapping</button>
-    </div>
-    ${reportKpis([{ label: 'Total Outstanding Receivable', value: total, color: 'amber', icon: '💰' }])}
+    ${await reportHeader('Outstanding Receivables', `${fmtMoney(totalReceivables)} owed to you, as of today · one row per customer ledger, never netted against each other`, '💰')}
+    ${groupNames.length > 1 ? `
+    <div class="tag-filter no-print" id="rcv-group-filter" style="margin-bottom:14px">
+      <button data-group="" class="${!activeGroup ? 'active' : ''}">📂 All Groups (${fmtMoney(totalReceivables)})</button>
+      ${groupNames.map((g) => `<button data-group="${g}" class="${activeGroup === g ? 'active' : ''}">${g} (${fmtMoney(round2(sum(receivables.filter((r) => r.groupName === g).map((r) => r.balance))))})</button>`).join('')}
+    </div>` : ''}
+    ${reportKpis([{ label: 'Total Outstanding Receivable', value: totalReceivables, color: 'amber', icon: '💰' }])}
+    ${reclassifiedCount ? `<div class="page-subtitle" style="margin-bottom:8px">⚠️ ${reclassifiedCount} supplier ledger${reclassifiedCount === 1 ? '' : 's'} currently ${reclassifiedCount === 1 ? 'has' : 'have'} a debit balance (an advance paid to them) and ${reclassifiedCount === 1 ? 'is' : 'are'} shown here as a receivable, not under Payables — that's what "we're owed" actually means for that ledger right now.</div>` : ''}
     <div class="card">
       <table class="data-table">
-        <thead><tr><th>Ledger</th><th class="num">Debit</th><th class="num">Credit</th><th class="num">Net Balance</th></tr></thead>
+        <thead><tr><th>Ledger</th><th>Group</th><th class="num">Debit</th><th class="num">Credit</th><th class="num">Net Balance</th></tr></thead>
         <tbody>
-          ${rows.map((r) => `<tr class="clickable-row" data-route-link="report-gl/${r.ledgerId}"><td>${r.name}</td><td class="num">${r.debit ? fmtMoney(r.debit) : ''}</td><td class="num">${r.credit ? fmtMoney(r.credit) : ''}</td><td class="num">${fmtMoney(r.balance)}</td></tr>`).join('') || '<tr><td colspan="4"><div class="empty-state">Nothing outstanding for the current mapping — configure it via ⚙ Mapping if this looks wrong.</div></td></tr>'}
+          ${rows.map((r) => `<tr class="clickable-row" data-route-link="report-gl/${r.ledgerId}"><td>${r.name}${r.reclassified ? ' <span class="badge badge-amber" title="Sits under Sundry Creditors, but currently has a debit balance">↔ advance paid</span>' : ''}</td><td><span class="badge badge-slate">${r.groupName}</span></td><td class="num">${r.debit ? fmtMoney(r.debit) : ''}</td><td class="num">${r.credit ? fmtMoney(r.credit) : ''}</td><td class="num">${fmtMoney(r.balance)}</td></tr>`).join('') || '<tr><td colspan="5"><div class="empty-state">Nothing outstanding right now.</div></td></tr>'}
         </tbody>
-        <tfoot><tr style="font-weight:700"><td>Total</td><td class="num">${fmtMoney(totalDebit)}</td><td class="num">${fmtMoney(totalCredit)}</td><td class="num">${fmtMoney(total)}</td></tr></tfoot>
+        <tfoot><tr style="font-weight:700"><td colspan="2">Total</td><td class="num">${fmtMoney(totalDebit)}</td><td class="num">${fmtMoney(totalCredit)}</td><td class="num">${fmtMoney(rowsTotal)}</td></tr></tfoot>
       </table>
-    </div>
-    <div id="rm-mapping-root"></div>`;
+    </div>`;
   bindDeepLinks(container);
-  container.querySelector('#rm-mapping-btn').addEventListener('click', () => {
-    openMappingEditorModal(container.querySelector('#rm-mapping-root'), 'receivablesMapped', () => renderReceivablesMapped(container));
+  container.querySelectorAll('#rcv-group-filter button').forEach((btn) => {
+    btn.addEventListener('click', () => renderReceivablesMapped(container, btn.dataset.group || null));
   });
 }
 
-/** Outstanding Payables — the mirror of renderReceivablesMapped, mapped engine driven. */
-async function renderPayablesMapped(container) {
-  const mapping = await getReportMapping('payablesMapped');
-  const [lines, ledgers] = await Promise.all([getMappedVoucherLines(mapping), localDB.getAll('ledgers')]);
-  const ledgerName = new Map(ledgers.map((l) => [l.id, l.name]));
-
-  const byLedger = new Map();
-  lines.forEach((l) => {
-    const agg = byLedger.get(l.ledgerId) || { debit: 0, credit: 0 };
-    agg.debit += l.debit; agg.credit += l.credit;
-    byLedger.set(l.ledgerId, agg);
-  });
-  const rows = [...byLedger.entries()]
-    .map(([ledgerId, agg]) => ({ ledgerId, name: ledgerName.get(ledgerId) || 'Unknown Ledger', debit: round2(agg.debit), credit: round2(agg.credit), balance: round2(agg.credit - agg.debit) }))
-    .filter((r) => r.debit !== 0 || r.credit !== 0)
-    .sort((a, b) => b.balance - a.balance);
-  const total = round2(sum(rows.map((r) => r.balance)));
+/** Outstanding Payables — the mirror of renderReceivablesMapped. Every Sundry Creditors ledger
+ *  (or a Sundry Debtors ledger whose actual balance has flipped to credit — an advance received
+ *  from that customer) shown as its own row, grouped with the same drill-down buttons. */
+async function renderPayablesMapped(container, selectedGroup) {
+  const { payables, totalPayables } = await partyLedgerBalances();
+  const groupNames = [...new Set(payables.map((r) => r.groupName))].sort();
+  const activeGroup = selectedGroup && groupNames.includes(selectedGroup) ? selectedGroup : null;
+  const rows = activeGroup ? payables.filter((r) => r.groupName === activeGroup) : payables;
+  const reclassifiedCount = payables.filter((r) => r.reclassified).length;
   const totalDebit = round2(sum(rows.map((r) => r.debit)));
   const totalCredit = round2(sum(rows.map((r) => r.credit)));
+  const rowsTotal = round2(sum(rows.map((r) => r.balance)));
 
   container.innerHTML = `
-    ${await reportHeader('Outstanding Payables (Mapped)', `Ledger/Group + Voucher Type mapping — ${fmtMoney(total)} outstanding (net of both bills and payments)`, '📤')}
-    <div class="no-print" style="margin-bottom:12px;display:flex;gap:8px">
-      <button class="btn btn-ghost btn-sm" id="pm-mapping-btn">⚙ Mapping</button>
-    </div>
-    ${reportKpis([{ label: 'Total Outstanding Payable', value: total, color: 'red', icon: '📤' }])}
+    ${await reportHeader('Outstanding Payables', `${fmtMoney(totalPayables)} you owe, as of today · one row per supplier ledger, never netted against each other`, '📤')}
+    ${groupNames.length > 1 ? `
+    <div class="tag-filter no-print" id="pay-group-filter" style="margin-bottom:14px">
+      <button data-group="" class="${!activeGroup ? 'active' : ''}">📂 All Groups (${fmtMoney(totalPayables)})</button>
+      ${groupNames.map((g) => `<button data-group="${g}" class="${activeGroup === g ? 'active' : ''}">${g} (${fmtMoney(round2(sum(payables.filter((r) => r.groupName === g).map((r) => r.balance))))})</button>`).join('')}
+    </div>` : ''}
+    ${reportKpis([{ label: 'Total Outstanding Payable', value: totalPayables, color: 'red', icon: '📤' }])}
+    ${reclassifiedCount ? `<div class="page-subtitle" style="margin-bottom:8px">⚠️ ${reclassifiedCount} customer ledger${reclassifiedCount === 1 ? '' : 's'} currently ${reclassifiedCount === 1 ? 'has' : 'have'} a credit balance (an advance they paid you) and ${reclassifiedCount === 1 ? 'is' : 'are'} shown here as a payable, not under Receivables — you owe them until it's applied against a future invoice.</div>` : ''}
     <div class="card">
       <table class="data-table">
-        <thead><tr><th>Ledger</th><th class="num">Debit</th><th class="num">Credit</th><th class="num">Net Balance</th></tr></thead>
+        <thead><tr><th>Ledger</th><th>Group</th><th class="num">Debit</th><th class="num">Credit</th><th class="num">Net Balance</th></tr></thead>
         <tbody>
-          ${rows.map((r) => `<tr class="clickable-row" data-route-link="report-gl/${r.ledgerId}"><td>${r.name}</td><td class="num">${r.debit ? fmtMoney(r.debit) : ''}</td><td class="num">${r.credit ? fmtMoney(r.credit) : ''}</td><td class="num">${fmtMoney(r.balance)}</td></tr>`).join('') || '<tr><td colspan="4"><div class="empty-state">Nothing outstanding for the current mapping — configure it via ⚙ Mapping if this looks wrong.</div></td></tr>'}
+          ${rows.map((r) => `<tr class="clickable-row" data-route-link="report-gl/${r.ledgerId}"><td>${r.name}${r.reclassified ? ' <span class="badge badge-amber" title="Sits under Sundry Debtors, but currently has a credit balance">↔ advance received</span>' : ''}</td><td><span class="badge badge-slate">${r.groupName}</span></td><td class="num">${r.debit ? fmtMoney(r.debit) : ''}</td><td class="num">${r.credit ? fmtMoney(r.credit) : ''}</td><td class="num">${fmtMoney(r.balance)}</td></tr>`).join('') || '<tr><td colspan="5"><div class="empty-state">Nothing owed right now.</div></td></tr>'}
         </tbody>
-        <tfoot><tr style="font-weight:700"><td>Total</td><td class="num">${fmtMoney(totalDebit)}</td><td class="num">${fmtMoney(totalCredit)}</td><td class="num">${fmtMoney(total)}</td></tr></tfoot>
+        <tfoot><tr style="font-weight:700"><td colspan="2">Total</td><td class="num">${fmtMoney(totalDebit)}</td><td class="num">${fmtMoney(totalCredit)}</td><td class="num">${fmtMoney(rowsTotal)}</td></tr></tfoot>
       </table>
-    </div>
-    <div id="pm-mapping-root"></div>`;
+    </div>`;
   bindDeepLinks(container);
-  container.querySelector('#pm-mapping-btn').addEventListener('click', () => {
-    openMappingEditorModal(container.querySelector('#pm-mapping-root'), 'payablesMapped', () => renderPayablesMapped(container));
+  container.querySelectorAll('#pay-group-filter button').forEach((btn) => {
+    btn.addEventListener('click', () => renderPayablesMapped(container, btn.dataset.group || null));
   });
 }
 
@@ -18507,8 +18525,8 @@ const NAV = [
     { key: 'report-gl', label: 'General Ledger', icon: '📚' },
     { key: 'report-receivables', label: 'Receivables Ageing', icon: '⏳' },
     { key: 'report-payables', label: 'Payables Ageing', icon: '📤' },
-    { key: 'report-receivables-mapped', label: 'Outstanding Receivables (Mapped)', icon: '💰' },
-    { key: 'report-payables-mapped', label: 'Outstanding Payables (Mapped)', icon: '📥' },
+    { key: 'report-receivables-mapped', label: 'Outstanding Receivables', icon: '💰' },
+    { key: 'report-payables-mapped', label: 'Outstanding Payables', icon: '📥' },
     { key: 'report-statement', label: 'Statement of Accounts', icon: '📜' },
     { key: 'report-user-log', label: 'User Activity Log', icon: '🕵️' },
     { key: 'report-advances', label: 'Customer Advances', icon: '🎁' }
