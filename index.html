@@ -2784,6 +2784,47 @@ async function findAndCleanOrphanedJournalLines(apply) {
   return orphans;
 }
 
+/** Finds exact-duplicate vouchers — the classic symptom of a Tally re-import or a bulk-upload
+ *  file that got processed twice: same date, same voucher type, same narration, and every
+ *  debit/credit line identical down to the ledger and amount. Deliberately strict (every line
+ *  must match, not just the total) so two genuinely different transactions that happen to share
+ *  a date and amount are never flagged. Returns groups of 2+ journals that are indistinguishable
+ *  from each other; the caller decides which one to keep (oldest by default) and which to remove
+ *  via hardDeleteJournalByRef(journal.id) — safe because that function's own-id lookup deletes
+ *  exactly one journal and its lines, not anything sharing its refId. */
+async function findDuplicateJournals(opts = {}) {
+  const [journals, allLines] = await Promise.all([localDB.getAll('journals'), localDB.getAll('journalLines')]);
+  const linesByJournal = new Map();
+  allLines.forEach((l) => { const arr = linesByJournal.get(l.journalId) || []; arr.push(l); linesByJournal.set(l.journalId, arr); });
+
+  let candidates = journals;
+  if (opts.ledgerId) {
+    const journalIdsTouchingLedger = new Set(allLines.filter((l) => l.ledgerId === opts.ledgerId).map((l) => l.journalId));
+    candidates = candidates.filter((j) => journalIdsTouchingLedger.has(j.id));
+  }
+  if (opts.from || opts.to) candidates = filterByDateRange(candidates, opts.from, opts.to);
+
+  const sigOf = (j) => {
+    const lineSig = (linesByJournal.get(j.id) || [])
+      .map((l) => `${l.ledgerId}:${round2(l.debit || 0)}:${round2(l.credit || 0)}`)
+      .sort().join('|');
+    return `${j.date}|${j.voucherType}|${(j.narration || '').trim().toLowerCase()}|${lineSig}`;
+  };
+
+  const groups = new Map();
+  candidates.forEach((j) => {
+    const sig = sigOf(j);
+    const arr = groups.get(sig) || [];
+    arr.push(j);
+    groups.set(sig, arr);
+  });
+
+  return [...groups.values()]
+    .filter((g) => g.length > 1)
+    .map((g) => g.sort((a, b) => (a.id > b.id ? 1 : -1))) // stable order so "keep the first" is deterministic
+    .sort((a, b) => a[0].date.localeCompare(b[0].date));
+}
+
 /** Ledger balance as of an optional cutoff date (inclusive). Positive = natural-side balance. */
 async function ledgerBalance(ledgerId, opts = {}) {
   const lines = await localDB.getByIndex('journalLines', 'ledgerId', ledgerId);
@@ -14871,8 +14912,117 @@ async function renderDataManagement(container) {
   });
 }
 
+/** Duplicate Voucher Finder — scans every posted voucher for exact duplicates (same date,
+ *  voucher type, narration, and every debit/credit line) and lets the user review each group
+ *  before deleting anything. Common cause: a Tally re-import or a bulk-upload file that got
+ *  processed twice — this is the tool to find and safely clean that up, one reviewed group at a
+ *  time or in bulk, always keeping the earliest copy of each duplicate and removing the rest. */
+async function renderDuplicateFinder(container, filters = {}) {
+  container.innerHTML = `${await reportHeader('Duplicate Voucher Finder', 'Scanning for exact-duplicate vouchers…', '🧹')}<div class="card"><div class="empty-state">Scanning every posted voucher — this can take a moment on a large ledger…</div></div>`;
 
-// ===== js/modules/settings.js =====
+  const [ledgers] = await Promise.all([localDB.getAll('ledgers')]);
+  const ledgerName = new Map(ledgers.map((l) => [l.id, l.name]));
+  const dupGroups = await findDuplicateJournals(filters);
+
+  const extraCount = sum(dupGroups.map((g) => g.length - 1));
+  const [allLines] = await Promise.all([localDB.getAll('journalLines')]);
+  const linesByJournal = new Map();
+  allLines.forEach((l) => { const arr = linesByJournal.get(l.journalId) || []; arr.push(l); linesByJournal.set(l.journalId, arr); });
+  const extraAmount = round2(sum(dupGroups.map((g) => {
+    const lines = linesByJournal.get(g[0].id) || [];
+    const amt = sum(lines.map((l) => l.debit || 0));
+    return amt * (g.length - 1);
+  })));
+
+  container.innerHTML = `
+    ${await reportHeader('Duplicate Voucher Finder', `${dupGroups.length} duplicate group${dupGroups.length === 1 ? '' : 's'} found — ${extraCount} extra voucher${extraCount === 1 ? '' : 's'} you can safely remove`, '🧹')}
+    <div class="card" style="margin-bottom:14px"><div class="page-subtitle">Matches vouchers that are indistinguishable from each other: same date, same voucher type, same narration, and every debit/credit line identical. Genuinely different transactions that happen to share a date and amount are never flagged, since every line has to match, not just the total. For each group, one copy is kept (the oldest) and the rest are removed — review before deleting anything.</div></div>
+    <div class="no-print" style="margin-bottom:14px;display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+      <div class="field" style="margin:0"><label>Limit to one ledger (optional)</label>
+        <select id="dup-ledger-filter"><option value="">All ledgers</option>${ledgers.slice().sort((a,b)=>a.name.localeCompare(b.name)).map((l) => `<option value="${l.id}" ${filters.ledgerId === l.id ? 'selected' : ''}>${l.name}</option>`).join('')}</select>
+      </div>
+      <div class="field" style="margin:0"><label>From</label><input type="date" id="dup-from" value="${filters.from || ''}" /></div>
+      <div class="field" style="margin:0"><label>To</label><input type="date" id="dup-to" value="${filters.to || ''}" /></div>
+      <button class="btn btn-primary btn-sm" id="dup-apply">Apply</button>
+      ${dupGroups.length ? `<button class="btn btn-danger btn-sm" id="dup-delete-all" style="margin-left:auto">🗑 Delete All ${extraCount} Duplicate${extraCount === 1 ? '' : 's'} (${fmtMoney(extraAmount)})</button>` : ''}
+    </div>
+    ${dupGroups.length ? reportKpis([
+      { label: 'Duplicate Groups', value: dupGroups.length, color: 'amber', icon: '🧹', isCount: true },
+      { label: 'Extra Vouchers to Remove', value: extraCount, color: 'red', icon: '🗑', isCount: true },
+      { label: 'Amount Double-Counted', value: extraAmount, color: 'red', icon: '💰' }
+    ]) : ''}
+    <div id="dup-groups">
+      ${dupGroups.length ? dupGroups.map((g, gi) => {
+        const lines = linesByJournal.get(g[0].id) || [];
+        const amount = round2(sum(lines.map((l) => l.debit || 0)));
+        const linesDesc = lines.map((l) => `${ledgerName.get(l.ledgerId) || '—'} ${l.debit ? 'Dr ' + fmtMoney(l.debit) : 'Cr ' + fmtMoney(l.credit)}`).join(' · ');
+        return `
+        <div class="card" style="margin-bottom:10px" data-dup-group="${gi}">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
+            <div>
+              <div style="font-weight:700">${fmtDate(g[0].date)} · <span class="badge badge-slate">${g[0].voucherType}</span> · ${fmtMoney(amount)} <span class="badge badge-amber">${g.length}× posted</span></div>
+              <div class="page-subtitle" style="margin-top:4px">${g[0].narration || '—'}</div>
+              <div class="page-subtitle" style="margin-top:2px;font-size:11.5px">${linesDesc}</div>
+            </div>
+            <button class="btn btn-danger btn-sm dup-delete-group" data-gi="${gi}">🗑 Keep 1, Delete ${g.length - 1} Extra${g.length - 1 === 1 ? '' : 's'}</button>
+          </div>
+          <table class="data-table" style="margin-top:10px">
+            <thead><tr><th>Voucher Ref</th><th>Status</th><th style="width:100px"></th></tr></thead>
+            <tbody>
+              ${g.map((j, ji) => `<tr class="clickable-row" data-view-journal="${j.id}">
+                <td>${j.voucherNo || j.id}</td>
+                <td>${ji === 0 ? '<span class="badge badge-green">✓ Keep (earliest)</span>' : '<span class="badge badge-red">Duplicate</span>'}</td>
+                <td>${ji === 0 ? '' : `<button class="btn btn-ghost btn-sm dup-delete-one" data-jid="${j.id}" data-gi="${gi}">Delete this one</button>`}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>`;
+      }).join('') : '<div class="card"><div class="empty-state"><div class="icon">✅</div>No exact duplicates found for the current filter.</div></div>'}
+    </div>`;
+
+  bindDeepLinks(container);
+  bindJournalDrillDowns(container);
+
+  container.querySelector('#dup-apply')?.addEventListener('click', () => {
+    renderDuplicateFinder(container, {
+      ledgerId: container.querySelector('#dup-ledger-filter').value || undefined,
+      from: container.querySelector('#dup-from').value || undefined,
+      to: container.querySelector('#dup-to').value || undefined
+    });
+  });
+
+  container.querySelector('#dup-delete-all')?.addEventListener('click', async () => {
+    if (!confirm(`Delete ${extraCount} duplicate voucher${extraCount === 1 ? '' : 's'} totaling ${fmtMoney(extraAmount)}? One copy of each will be kept. This cannot be undone.`)) return;
+    for (const g of dupGroups) {
+      for (let i = 1; i < g.length; i++) await hardDeleteJournalByRef(g[i].id);
+    }
+    toast(`Removed ${extraCount} duplicate voucher${extraCount === 1 ? '' : 's'}`, 'success');
+    renderDuplicateFinder(container, filters);
+  });
+
+  container.querySelectorAll('.dup-delete-group').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const g = dupGroups[Number(btn.dataset.gi)];
+      if (!confirm(`Delete ${g.length - 1} duplicate${g.length - 1 === 1 ? '' : 's'} of this voucher, keeping the earliest?`)) return;
+      for (let i = 1; i < g.length; i++) await hardDeleteJournalByRef(g[i].id);
+      toast('Duplicates removed', 'success');
+      renderDuplicateFinder(container, filters);
+    });
+  });
+
+  container.querySelectorAll('.dup-delete-one').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!confirm('Delete this duplicate voucher? This cannot be undone.')) return;
+      await hardDeleteJournalByRef(btn.dataset.jid);
+      toast('Voucher removed', 'success');
+      renderDuplicateFinder(container, filters);
+    });
+  });
+}
+
+
 
 const SYSTEM_LEDGER_LABELS = {
   cash: 'Cash', bank: 'Bank', pettyCash: 'Petty Cash',
@@ -17742,6 +17892,10 @@ async function renderVoucherRegister(container) {
   const { from, to } = periodRange(period, container.dataset.vrFrom, container.dataset.vrTo);
   const mapping = await getReportMapping('voucherRegister');
   const hasMapping = !!((mapping.ledgerIds.length) || (mapping.groupIds.length) || (mapping.voucherTypes.length));
+  const search = (container.dataset.vrSearch || '').trim().toLowerCase();
+  const ledgerFilter = container.dataset.vrLedger || '';
+  const sortKey = container.dataset.vrSort || 'date';
+  const sortDir = container.dataset.vrSortDir || 'desc';
 
   const [lines, ledgers, costCentres, jobs, salesmen, journals] = await Promise.all([
     getMappedVoucherLines(mapping, { from, to }),
@@ -17754,9 +17908,18 @@ async function renderVoucherRegister(container) {
   const smName = new Map(salesmen.map((s) => [s.id, s.name]));
   const journalById = new Map(journals.map((j) => [j.id, j]));
 
-  const rows = lines
-    .map((l) => ({ ...l, voucherNo: journalById.get(l.journalId)?.voucherNo || '—', stdType: toStandardVoucherType(l.voucherType) }))
-    .sort((a, b) => b.date.localeCompare(a.date));
+  let rows = lines.map((l) => ({ ...l, voucherNo: journalById.get(l.journalId)?.voucherNo || '—', stdType: toStandardVoucherType(l.voucherType), ledgerNm: ledgerName.get(l.ledgerId) || '—' }));
+  if (ledgerFilter) rows = rows.filter((r) => r.ledgerId === ledgerFilter);
+  if (search) rows = rows.filter((r) => r.ledgerNm.toLowerCase().includes(search) || (r.narration || '').toLowerCase().includes(search) || (r.voucherNo || '').toLowerCase().includes(search));
+
+  const SORTERS = {
+    date: (a, b) => a.date.localeCompare(b.date),
+    ledger: (a, b) => a.ledgerNm.localeCompare(b.ledgerNm),
+    narration: (a, b) => (a.narration || '').localeCompare(b.narration || ''),
+    amount: (a, b) => ((a.debit || a.credit || 0) - (b.debit || b.credit || 0))
+  };
+  rows.sort(SORTERS[sortKey] || SORTERS.date);
+  if (sortDir === 'desc') rows.reverse();
 
   // A distinct color per voucher group — badge AND a thin left-border accent on the row itself —
   // so scanning down a long register, someone can tell at a glance "this batch is all Receipts,
@@ -17774,11 +17937,14 @@ async function renderVoucherRegister(container) {
   const byType = rows.reduce((acc, r) => { acc[r.stdType] = (acc[r.stdType] || 0) + 1; return acc; }, {});
   const totalDebit = round2(sum(rows.map((r) => r.debit)));
   const totalCredit = round2(sum(rows.map((r) => r.credit)));
+  const sortArrow = (key) => sortKey === key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '';
 
   container.innerHTML = `
     ${await reportHeader('Voucher Register', `${rows.length} voucher line${rows.length === 1 ? '' : 's'} — the centralized accounting source of truth${hasMapping ? ' (filtered by mapping)' : ''}`, '🗂️')}
     <div class="card" style="margin-bottom:12px"><div class="page-subtitle">Every double-entry line posted by every module — Sales, Purchase, Receipt, Payment, Contra, Journal — in one place, exactly as it hits the Ledger. Every other report/register/dashboard KPI is derived from this same data through the mapping engine below.</div></div>
     <div class="no-print" style="margin-bottom:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <input id="vr-search" placeholder="🔍 Search ledger, narration, or voucher #…" value="${search}" style="min-width:240px;padding:7px 10px;border:1px solid var(--slate-300);border-radius:var(--radius-sm)" />
+      <select id="vr-ledger-filter" style="padding:7px 10px"><option value="">All ledgers</option>${ledgers.slice().sort((a,b)=>a.name.localeCompare(b.name)).map((l) => `<option value="${l.id}" ${ledgerFilter === l.id ? 'selected' : ''}>${l.name}</option>`).join('')}</select>
       <button class="btn btn-ghost btn-sm" id="vr-mapping-btn">⚙ Mapping${hasMapping ? ' (active)' : ''}</button>
       <button class="btn btn-teal btn-sm" id="xlsx-download">⬇ Export to Excel</button>
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-left:auto;font-size:11.5px">
@@ -17791,14 +17957,20 @@ async function renderVoucherRegister(container) {
     </div>
     <div class="card">
       <table class="data-table">
-        <thead><tr><th>Date</th><th>Voucher Ref</th><th>Voucher Type</th><th>Ledger</th><th class="num">Debit</th><th class="num">Credit</th><th>Cost Centre</th><th>Salesman</th><th>Job</th><th>Narration</th></tr></thead>
+        <thead><tr>
+          <th class="clickable-row" data-sort="date" style="cursor:pointer">Date${sortArrow('date')}</th>
+          <th>Voucher Ref</th><th>Voucher Type</th>
+          <th class="clickable-row" data-sort="ledger" style="cursor:pointer">Ledger${sortArrow('ledger')}</th>
+          <th class="num clickable-row" data-sort="amount" style="cursor:pointer">Debit${sortArrow('amount')}</th><th class="num">Credit</th><th>Cost Centre</th><th>Salesman</th><th>Job</th>
+          <th class="clickable-row" data-sort="narration" style="cursor:pointer">Narration${sortArrow('narration')}</th>
+        </tr></thead>
         <tbody>
           ${rows.map((r) => `<tr style="border-left:3px solid ${typeColor(r.stdType).border}">
             <td>${fmtDate(r.date)}</td><td>${r.voucherNo}</td><td><span class="badge ${typeColor(r.stdType).badge}">${r.stdType}</span></td>
-            <td>${ledgerName.get(r.ledgerId) || '—'}</td>
+            <td>${r.ledgerNm}</td>
             <td class="num">${r.debit ? fmtMoney(r.debit) : ''}</td><td class="num">${r.credit ? fmtMoney(r.credit) : ''}</td>
             <td>${ccName.get(r.costCentreId) || ''}</td><td>${smName.get(r.salesmanId) || ''}</td><td>${jobName.get(r.jobId) || ''}</td>
-            <td>${r.narration || ''}</td></tr>`).join('') || '<tr><td colspan="10"><div class="empty-state">No voucher lines match this range/mapping.</div></td></tr>'}
+            <td>${r.narration || ''}</td></tr>`).join('') || '<tr><td colspan="10"><div class="empty-state">No voucher lines match this range/filter.</div></td></tr>'}
         </tbody>
         <tfoot><tr style="font-weight:700"><td colspan="4">Total</td><td class="num">${fmtMoney(totalDebit)}</td><td class="num">${fmtMoney(totalCredit)}</td><td colspan="4"></td></tr></tfoot>
       </table>
@@ -17814,7 +17986,24 @@ async function renderVoucherRegister(container) {
   });
   container.querySelector('#xlsx-download').addEventListener('click', () => {
     downloadExcel('voucher-register', ['Date', 'Voucher Ref', 'Voucher Type', 'Ledger', 'Debit', 'Credit', 'Cost Centre', 'Salesman', 'Job', 'Narration'],
-      rows.map((r) => [fmtDate(r.date), r.voucherNo, r.stdType, ledgerName.get(r.ledgerId) || '', r.debit || '', r.credit || '', ccName.get(r.costCentreId) || '', smName.get(r.salesmanId) || '', jobName.get(r.jobId) || '', r.narration || '']));
+      rows.map((r) => [fmtDate(r.date), r.voucherNo, r.stdType, r.ledgerNm, r.debit || '', r.credit || '', ccName.get(r.costCentreId) || '', smName.get(r.salesmanId) || '', jobName.get(r.jobId) || '', r.narration || '']));
+  });
+  let searchTimer;
+  container.querySelector('#vr-search').addEventListener('input', (e) => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => { container.dataset.vrSearch = e.target.value; renderVoucherRegister(container); }, 300);
+  });
+  container.querySelector('#vr-ledger-filter').addEventListener('change', (e) => {
+    container.dataset.vrLedger = e.target.value;
+    renderVoucherRegister(container);
+  });
+  container.querySelectorAll('[data-sort]').forEach((th) => {
+    th.addEventListener('click', () => {
+      const key = th.dataset.sort;
+      container.dataset.vrSortDir = (sortKey === key && sortDir === 'desc') ? 'asc' : 'desc';
+      container.dataset.vrSort = key;
+      renderVoucherRegister(container);
+    });
   });
   bindDeepLinks(container);
 }
@@ -18529,7 +18718,8 @@ const NAV = [
     { key: 'report-payables-mapped', label: 'Outstanding Payables', icon: '📥' },
     { key: 'report-statement', label: 'Statement of Accounts', icon: '📜' },
     { key: 'report-user-log', label: 'User Activity Log', icon: '🕵️' },
-    { key: 'report-advances', label: 'Customer Advances', icon: '🎁' }
+    { key: 'report-advances', label: 'Customer Advances', icon: '🎁' },
+    { key: 'duplicate-finder', label: 'Duplicate Voucher Finder', icon: '🧹' }
   ]},
   { group: 'Settings', items: [
     { key: 'settings', label: 'Company & Settings', icon: '⚙️' },
@@ -18602,7 +18792,8 @@ const ROUTES = {
   'settings': (el, param) => renderSettings(el, param),
   'users-roles': (el) => renderUsersRoles(el),
   'ask-eknomix': (el) => renderAskEknomix(el),
-  'data-management': (el) => renderDataManagement(el)
+  'data-management': (el) => renderDataManagement(el),
+  'duplicate-finder': (el) => renderDuplicateFinder(el)
 };
 
 const COLLAPSED_BY_DEFAULT = ['Sales', 'Purchase', 'Accounts', 'Payroll', 'HR & Admin', 'Inventory', 'Masters', 'Financial Statements', 'Registers', 'Analysis', 'Settings'];
