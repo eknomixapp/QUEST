@@ -1707,10 +1707,6 @@ function isConfigured() {
 // this file has no way to inspect or create on its own. See the SQL comment on
 // pushCloudBackup() for the one-time setup required in the Supabase SQL Editor.
 const SUPABASE_URL = 'https://wvafqdxwnposrdlrxbia.supabase.co';
-// Using the legacy JWT-format anon key rather than the newer sb_publishable_... short-key —
-// both are the correct "safe for client-side" public key for this project, but the JWT format
-// is guaranteed compatible with every version of the Supabase client library, sidestepping any
-// question of whether the CDN-loaded version fully supports the newer key format yet.
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_F2tAZa9eQrNXW6J0Kogwag_mm9rgQy2';
 
 let _supabaseClientLibPromise = null;
@@ -12871,8 +12867,8 @@ async function renderDashboard(container) {
          Journal upload). A separate "Income" KPI showing the same underlying figure under a
          different label was redundant and has been removed rather than kept alongside Sales. -->
     <div class="grid grid-4" style="margin-bottom:16px">
-      ${kpi('Total Receivables', totalReceivables, totalReceivables > 0 ? 'amber' : 'teal', 'report-receivables', '⏳')}
-      ${kpi('Total Payables', totalPayables, totalPayables > 0 ? 'red' : 'teal', 'report-payables', '📤')}
+      ${kpi('Total Receivables', totalReceivables, totalReceivables > 0 ? 'amber' : 'teal', 'report-receivables-mapped', '⏳')}
+      ${kpi('Total Payables', totalPayables, totalPayables > 0 ? 'red' : 'teal', 'report-payables-mapped', '📤')}
       ${kpi('Net Profit — ' + period, pl.netProfit, pl.netProfit >= 0 ? 'teal' : 'red', dateRouteLink('report-pl', from, to), pl.netProfit >= 0 ? '📈' : '📉', true)}
       <div class="card kpi-card kpi-purple clickable-row" data-route-link="report-pl">
         <div class="kpi-label">📐 Profit Margin</div>
@@ -17812,27 +17808,30 @@ async function renderReceivablesMapped(container) {
     byLedger.set(l.ledgerId, agg);
   });
   const rows = [...byLedger.entries()]
-    .map(([ledgerId, agg]) => ({ ledgerId, name: ledgerName.get(ledgerId) || 'Unknown Ledger', balance: round2(agg.debit - agg.credit) }))
-    .filter((r) => Math.abs(r.balance) > 0.005)
+    .map(([ledgerId, agg]) => ({ ledgerId, name: ledgerName.get(ledgerId) || 'Unknown Ledger', debit: round2(agg.debit), credit: round2(agg.credit), balance: round2(agg.debit - agg.credit) }))
+    .filter((r) => r.debit !== 0 || r.credit !== 0)
     .sort((a, b) => b.balance - a.balance);
   const total = round2(sum(rows.map((r) => r.balance)));
+  const totalDebit = round2(sum(rows.map((r) => r.debit)));
+  const totalCredit = round2(sum(rows.map((r) => r.credit)));
 
   container.innerHTML = `
-    ${await reportHeader('Outstanding Receivables (Mapped)', `Ledger/Group + Voucher Type mapping — ${fmtMoney(total)} outstanding`, '💰')}
+    ${await reportHeader('Outstanding Receivables (Mapped)', `Ledger/Group + Voucher Type mapping — ${fmtMoney(total)} outstanding (net of both invoices and receipts)`, '💰')}
     <div class="no-print" style="margin-bottom:12px;display:flex;gap:8px">
       <button class="btn btn-ghost btn-sm" id="rm-mapping-btn">⚙ Mapping</button>
     </div>
     ${reportKpis([{ label: 'Total Outstanding Receivable', value: total, color: 'amber', icon: '💰' }])}
     <div class="card">
       <table class="data-table">
-        <thead><tr><th>Ledger</th><th class="num">Outstanding Balance</th></tr></thead>
+        <thead><tr><th>Ledger</th><th class="num">Debit</th><th class="num">Credit</th><th class="num">Net Balance</th></tr></thead>
         <tbody>
-          ${rows.map((r) => `<tr><td>${r.name}</td><td class="num">${fmtMoney(r.balance)}</td></tr>`).join('') || '<tr><td colspan="2"><div class="empty-state">Nothing outstanding for the current mapping — configure it via ⚙ Mapping if this looks wrong.</div></td></tr>'}
+          ${rows.map((r) => `<tr class="clickable-row" data-route-link="report-gl/${r.ledgerId}"><td>${r.name}</td><td class="num">${r.debit ? fmtMoney(r.debit) : ''}</td><td class="num">${r.credit ? fmtMoney(r.credit) : ''}</td><td class="num">${fmtMoney(r.balance)}</td></tr>`).join('') || '<tr><td colspan="4"><div class="empty-state">Nothing outstanding for the current mapping — configure it via ⚙ Mapping if this looks wrong.</div></td></tr>'}
         </tbody>
-        <tfoot><tr style="font-weight:700"><td>Total</td><td class="num">${fmtMoney(total)}</td></tr></tfoot>
+        <tfoot><tr style="font-weight:700"><td>Total</td><td class="num">${fmtMoney(totalDebit)}</td><td class="num">${fmtMoney(totalCredit)}</td><td class="num">${fmtMoney(total)}</td></tr></tfoot>
       </table>
     </div>
     <div id="rm-mapping-root"></div>`;
+  bindDeepLinks(container);
   container.querySelector('#rm-mapping-btn').addEventListener('click', () => {
     openMappingEditorModal(container.querySelector('#rm-mapping-root'), 'receivablesMapped', () => renderReceivablesMapped(container));
   });
@@ -17851,27 +17850,30 @@ async function renderPayablesMapped(container) {
     byLedger.set(l.ledgerId, agg);
   });
   const rows = [...byLedger.entries()]
-    .map(([ledgerId, agg]) => ({ ledgerId, name: ledgerName.get(ledgerId) || 'Unknown Ledger', balance: round2(agg.credit - agg.debit) }))
-    .filter((r) => Math.abs(r.balance) > 0.005)
+    .map(([ledgerId, agg]) => ({ ledgerId, name: ledgerName.get(ledgerId) || 'Unknown Ledger', debit: round2(agg.debit), credit: round2(agg.credit), balance: round2(agg.credit - agg.debit) }))
+    .filter((r) => r.debit !== 0 || r.credit !== 0)
     .sort((a, b) => b.balance - a.balance);
   const total = round2(sum(rows.map((r) => r.balance)));
+  const totalDebit = round2(sum(rows.map((r) => r.debit)));
+  const totalCredit = round2(sum(rows.map((r) => r.credit)));
 
   container.innerHTML = `
-    ${await reportHeader('Outstanding Payables (Mapped)', `Ledger/Group + Voucher Type mapping — ${fmtMoney(total)} outstanding`, '📤')}
+    ${await reportHeader('Outstanding Payables (Mapped)', `Ledger/Group + Voucher Type mapping — ${fmtMoney(total)} outstanding (net of both bills and payments)`, '📤')}
     <div class="no-print" style="margin-bottom:12px;display:flex;gap:8px">
       <button class="btn btn-ghost btn-sm" id="pm-mapping-btn">⚙ Mapping</button>
     </div>
     ${reportKpis([{ label: 'Total Outstanding Payable', value: total, color: 'red', icon: '📤' }])}
     <div class="card">
       <table class="data-table">
-        <thead><tr><th>Ledger</th><th class="num">Outstanding Balance</th></tr></thead>
+        <thead><tr><th>Ledger</th><th class="num">Debit</th><th class="num">Credit</th><th class="num">Net Balance</th></tr></thead>
         <tbody>
-          ${rows.map((r) => `<tr><td>${r.name}</td><td class="num">${fmtMoney(r.balance)}</td></tr>`).join('') || '<tr><td colspan="2"><div class="empty-state">Nothing outstanding for the current mapping — configure it via ⚙ Mapping if this looks wrong.</div></td></tr>'}
+          ${rows.map((r) => `<tr class="clickable-row" data-route-link="report-gl/${r.ledgerId}"><td>${r.name}</td><td class="num">${r.debit ? fmtMoney(r.debit) : ''}</td><td class="num">${r.credit ? fmtMoney(r.credit) : ''}</td><td class="num">${fmtMoney(r.balance)}</td></tr>`).join('') || '<tr><td colspan="4"><div class="empty-state">Nothing outstanding for the current mapping — configure it via ⚙ Mapping if this looks wrong.</div></td></tr>'}
         </tbody>
-        <tfoot><tr style="font-weight:700"><td>Total</td><td class="num">${fmtMoney(total)}</td></tr></tfoot>
+        <tfoot><tr style="font-weight:700"><td>Total</td><td class="num">${fmtMoney(totalDebit)}</td><td class="num">${fmtMoney(totalCredit)}</td><td class="num">${fmtMoney(total)}</td></tr></tfoot>
       </table>
     </div>
     <div id="pm-mapping-root"></div>`;
+  bindDeepLinks(container);
   container.querySelector('#pm-mapping-btn').addEventListener('click', () => {
     openMappingEditorModal(container.querySelector('#pm-mapping-root'), 'payablesMapped', () => renderPayablesMapped(container));
   });
