@@ -88,6 +88,7 @@ a { color: var(--accent-dark); }
   padding: 0 20px;
   background: var(--white);
   border-bottom: 1px solid var(--slate-100);
+  min-width: 0;
 }
 .topbar .brand-mini { display: none; }
 .topbar .search {
@@ -173,6 +174,8 @@ a { color: var(--accent-dark); }
 .main {
   grid-area: main;
   overflow-y: auto;
+  overflow-x: hidden;
+  min-width: 0;
   padding: 22px 26px 60px;
 }
 .page-header {
@@ -588,13 +591,17 @@ tr.is-cancelled td { color: var(--red); background: var(--red-tint); }
 }
 /* Mobile: collapse sidebar to a bottom/hamburger pattern */
 @media (max-width: 860px) {
-  #app { grid-template-columns: 0 1fr; }
+  #app.app-shell { grid-template-columns: 0 1fr; }
   .sidebar {
     position: fixed; left: 0; top: 0; bottom: 0; width: 240px;
     transform: translateX(-100%); transition: transform 0.2s ease; z-index: 60;
   }
   .sidebar.open { transform: translateX(0); }
+  .topbar { padding: 0 12px; gap: 8px; }
   .topbar .brand-mini { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+  .topbar .search { display: none; }
+  .topbar-right { gap: 8px; }
+  .user-chip span.badge { display: none; }
   .main { padding: 16px; }
 }
 
@@ -1256,6 +1263,7 @@ function parseCsv(text) {
  *  — that's the right call for CSV, where viewing it as text is a reasonable fallback, but nobody
  *  wants to "view a spreadsheet as raw HTML in a browser tab"; a spreadsheet should just download. */
 function downloadExcel(filename, headers, rows) {
+  if (!canBulkOrExport()) { toast(`Only Super Admin can export or download data. Your role: ${_currentUserRef?.role || 'Unknown'}.`, 'error'); return; }
   const esc = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const headerRow = `<tr>${headers.map((h) => `<th style="background:#13233F;color:#fff;font-weight:bold;padding:4px 8px;border:1px solid #ccc">${esc(h)}</th>`).join('')}</tr>`;
   const bodyRows = rows.map((r) => `<tr>${r.map((c) => `<td style="padding:4px 8px;border:1px solid #ccc">${esc(c)}</td>`).join('')}</tr>`).join('');
@@ -1277,6 +1285,7 @@ function downloadExcel(filename, headers, rows) {
 }
 
 function downloadCsv(filename, headers, rows) {
+  if (!canBulkOrExport()) { toast(`Only Super Admin can export or download data. Your role: ${_currentUserRef?.role || 'Unknown'}.`, 'error'); return; }
   const escape = (v) => {
     const s = String(v ?? '');
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -1796,8 +1805,13 @@ function isSupabaseConfigured() {
  *  once this is configured, since Supabase is now the actual source of truth for who can log
  *  in). Role and display name come from the user's metadata: when creating a user in the
  *  Supabase dashboard, set "Raw User Meta Data" to e.g. {"name": "Jane Smith", "role": "Admin"}.
- *  If no role is set, this defaults to Super Admin — reasonable for a small, self-managed team
- *  where you're creating your own accounts directly, not a public sign-up flow. */
+ *  SECURITY: if no role is set, this now defaults to Viewer (the LEAST privileged role), not
+ *  Super Admin. It used to default to Super Admin on the reasoning that a small team's very
+ *  first account shouldn't get locked out — but that same fallback silently promoted every
+ *  OTHER account whose role metadata was simply forgotten (easy to miss — it's a JSON field in
+ *  a dashboard, not a form control) to full Super Admin as well, which is exactly backwards: a
+ *  forgotten permission should fail closed, not fail open. A genuinely new team's first account
+ *  should have its role set explicitly at creation time instead of relying on this fallback. */
 async function supabaseSignIn(email, password) {
   const sb = await getSupabaseClient();
   const { data, error } = await sb.auth.signInWithPassword({ email, password });
@@ -1808,7 +1822,8 @@ async function supabaseSignIn(email, password) {
     throw new Error(error.message);
   }
   const meta = data.user.user_metadata || {};
-  return { id: data.user.id, name: meta.name || data.user.email, role: meta.role || 'Super Admin' };
+  if (!meta.role) console.warn(`⚠️ Supabase user ${data.user.email} has no "role" set in Raw User Meta Data — defaulting to Viewer (read-only). Set their role explicitly in the Supabase dashboard.`);
+  return { id: data.user.id, name: meta.name || data.user.email, role: meta.role || 'Viewer' };
 }
 
 async function supabaseSignOut() {
@@ -1823,7 +1838,8 @@ async function supabaseCurrentUser() {
   const { data } = await sb.auth.getSession();
   if (!data.session) return null;
   const meta = data.session.user.user_metadata || {};
-  return { id: data.session.user.id, name: meta.name || data.session.user.email, role: meta.role || 'Super Admin' };
+  if (!meta.role) console.warn(`⚠️ Supabase user ${data.session.user.email} has no "role" set in Raw User Meta Data — defaulting to Viewer (read-only). Set their role explicitly in the Supabase dashboard.`);
+  return { id: data.session.user.id, name: meta.name || data.session.user.email, role: meta.role || 'Viewer' };
 }
 
 // ---------------------------------------------------------------------
@@ -7777,7 +7793,7 @@ async function renderJournalList(container) {
     <div class="page-header">
       <div><div class="page-title">📔 Journal Entries</div><div class="page-subtitle">${journals.length} posted entr${journals.length === 1 ? 'y' : 'ies'} (including Receipts &amp; Payments)${drafts.length ? ` · ${drafts.length} draft${drafts.length === 1 ? '' : 's'} awaiting posting` : ''}</div></div>
       <div style="display:flex;gap:8px">
-        <button class="btn btn-teal" id="bulk-upload">⬆ Bulk Upload CSV</button>
+        ${canBulkOrExport() ? '<button class="btn btn-teal" id="bulk-upload">⬆ Bulk Upload CSV</button>' : ''}
         <button class="btn btn-navy" id="new-journal">+ New Journal Entry</button>
       </div>
     </div>
@@ -7844,7 +7860,7 @@ async function renderJournalList(container) {
     renderJournalList(container);
   }));
   container.querySelector('#new-journal').addEventListener('click', () => renderJournalForm(container));
-  container.querySelector('#bulk-upload').addEventListener('click', () => openBulkUploadModal(container));
+  container.querySelector('#bulk-upload')?.addEventListener('click', () => openBulkUploadModal(container));
   bindDeepLinks(container);
   bindJournalDrillDowns(container);
 }
@@ -13269,7 +13285,7 @@ async function renderChartOfAccounts(container) {
         <div class="page-subtitle">${ledgers.length} ledgers · ${groups.length} groups · nested Tally-style structure</div>
       </div>
       <div style="display:flex;gap:8px">
-        <button class="btn btn-teal" id="bulk-upload-ledgers">⬆ Bulk Upload</button>
+        ${canBulkOrExport() ? '<button class="btn btn-teal" id="bulk-upload-ledgers">⬆ Bulk Upload</button>' : ''}
         <button class="btn btn-ghost" id="fix-ledger-categories" title="Chart of Accounts always shows a group/ledger under its real, current place in the tree — but some other screens (like the Invoice form's Income dropdown) check a cached copy of that category, which can go stale for a sub-group whose nature never matched its parent, or a ledger whose group's nature changed after it was created. This resyncs both, top-down.">🔧 Fix Categories</button>
         <button class="btn btn-navy" id="add-group">+ New Group</button>
         <button class="btn btn-primary" id="add-ledger">+ New Ledger</button>
@@ -13296,7 +13312,7 @@ async function renderChartOfAccounts(container) {
 
   container.querySelector('#add-ledger').addEventListener('click', () => openLedgerModal(container));
   container.querySelector('#add-group').addEventListener('click', () => openGroupModal(container));
-  container.querySelector('#bulk-upload-ledgers').addEventListener('click', () => openBulkLedgerModal(container));
+  container.querySelector('#bulk-upload-ledgers')?.addEventListener('click', () => openBulkLedgerModal(container));
   container.querySelector('#fix-ledger-categories').addEventListener('click', async () => {
     const btn = container.querySelector('#fix-ledger-categories');
     btn.disabled = true; btn.textContent = 'Checking…';
@@ -14399,7 +14415,7 @@ async function renderMaster(container, masterKey) {
       </div>
       <div style="display:flex; gap:8px;">
         <input id="quick-search" placeholder="Search ${schema.title.toLowerCase()}…" style="padding:8px 12px;border:1px solid var(--slate-100);border-radius:6px;min-width:220px" />
-        <button class="btn btn-teal" id="bulk-upload">⬆ Bulk Upload</button>
+        ${canBulkOrExport() ? '<button class="btn btn-teal" id="bulk-upload">⬆ Bulk Upload</button>' : ''}
         <button class="btn btn-primary" id="add-record">+ New</button>
       </div>
     </div>
@@ -14416,7 +14432,7 @@ async function renderMaster(container, masterKey) {
   `;
 
   container.querySelector('#add-record').addEventListener('click', () => openMasterModal(container, masterKey));
-  container.querySelector('#bulk-upload').addEventListener('click', () => openMasterBulkUploadModal(container, masterKey));
+  container.querySelector('#bulk-upload')?.addEventListener('click', () => openMasterBulkUploadModal(container, masterKey));
   container.querySelectorAll('[data-edit]').forEach((btn) =>
     btn.addEventListener('click', () => openMasterModal(container, masterKey, btn.dataset.edit)));
   bindDeepLinks(container);
@@ -16503,7 +16519,10 @@ const ROLE_NAV_ALLOW = {
   // needs those two regardless of what else they can see.
   'Accountant': ['cash-book', 'report-cash-book', 'sales-invoice', 'quotation', 'receipt', 'customer', 'ask-eknomix',
     'report-sales-register', 'report-sales-register-mapped', 'report-receivables', 'report-receivables-mapped',
-    'report-payables', 'report-payables-mapped', 'report-advances', 'report-statement'],
+    'report-payables', 'report-payables-mapped', 'report-advances', 'report-statement',
+    // HR / Payroll module — added so Accountant can run payroll alongside their existing scope.
+    'payroll-dashboard', 'payroll-employees', 'payroll-attendance', 'payroll-salary-structure',
+    'payroll-salary-elements', 'payroll-processing', 'payroll-posting', 'report-payroll-register'],
   'Sales': ['dashboard', 'ask-eknomix', 'sales-invoice', 'quotation', 'receipt', 'customers', 'items',
     'report-sales-register', 'report-receivables', 'report-advances', 'report-statement'],
   'Purchase': ['dashboard', 'ask-eknomix', 'purchase', 'payment', 'suppliers', 'items',
@@ -16514,18 +16533,36 @@ const ROLE_NAV_ALLOW = {
 };
 
 // Route keys that make up "Masters" (including Chart of Accounts, since that's master ledger
-// data too) and "Settings" respectively — used to build Partner's and Manager's access by
-// EXCLUSION instead of an explicit allow-list, so a newly added route is included by default
-// rather than silently invisible to them until someone remembers to add it to a list.
+// data too) and "Settings" respectively — Settings is still used to build Manager's access by
+// EXCLUSION; Masters is kept as a reference list for other checks even though Partner no longer
+// excludes it (Partner can now view Masters, just never write to them — enforced by
+// VIEW_ONLY_ROLES/VIEW_ONLY_BLOCKED_STORES below, not by hiding the page).
 const MASTER_DATA_ROUTES = ['customers', 'suppliers', 'items', 'customer', 'supplier',
   'chart-of-accounts', 'tally-import', 'cost-centres', 'jobs', 'salesmen'];
 const SETTINGS_ROUTES = ['settings', 'users-roles', 'data-management'];
 
+/** Bulk data import/upload tools — Tally Import and every "⬆ Bulk Upload" screen (ledgers,
+ *  masters, journal entries via CSV). Visible to Super Admin only, regardless of what else a
+ *  role can otherwise see — even Admin/Manager/Partner, who can see almost everything else,
+ *  don't get these, since a bad bulk file touches hundreds of records at once across every
+ *  connected device via sync. Not just "no write access" (VIEW_ONLY_ROLES) — hidden entirely,
+ *  the same way Settings is hidden from Partner/Manager. */
+/** True only for Super Admin — the single gate shared by every "Export"/"Download" button in
+ *  the app (via downloadCsv/downloadExcel) and every Bulk Upload trigger. Bulk import and mass
+ *  export both move large amounts of data at once — across every connected device via sync for
+ *  imports — so both are deliberately narrower than "who can see/edit this page." */
+function canBulkOrExport() { return _currentUserRef?.role === 'Super Admin'; }
+
+const SUPER_ADMIN_ONLY_ROUTES = ['tally-import'];
+
 function canSeeRoute(role, routeKey) {
-  // Partner: can view everything EXCEPT Masters and Settings — not an allow-list of specific
-  // pages, since "everything except X and Y" should still include new report/module pages added
-  // later without needing this list updated every time.
-  if (role === 'Partner') return !MASTER_DATA_ROUTES.includes(routeKey) && !SETTINGS_ROUTES.includes(routeKey);
+  if (role !== 'Super Admin' && SUPER_ADMIN_ONLY_ROUTES.includes(routeKey)) return false;
+  // Partner: can view everything EXCEPT Settings — not an allow-list of specific pages, since
+  // "everything except Settings" should still include new report/module pages added later
+  // without needing this list updated every time. Partner can see Masters (Customers, Chart of
+  // Accounts, etc.) now — they just can't ever save/edit/delete/cancel anything anywhere,
+  // enforced centrally below, not by hiding pages from them.
+  if (role === 'Partner') return !SETTINGS_ROUTES.includes(routeKey);
   // Manager: full access except Settings.
   if (role === 'Manager') return !SETTINGS_ROUTES.includes(routeKey);
   const allow = ROLE_NAV_ALLOW[role];
@@ -16699,7 +16736,7 @@ async function renderLoginScreen(container, onLogin, mode = 'login') {
           </div>` : ''}
           ${supabaseReady ? `
           <div style="font-size:11px;color:var(--slate-500);margin-top:12px;line-height:1.6;background:var(--paper);border-radius:6px;padding:10px">
-            ℹ️ Accounts are created in your Supabase project's Authentication tab, not here. Set each user's role via their "Raw User Meta Data" — e.g. <code>{"name":"Jane Smith","role":"Admin"}</code>.
+            ℹ️ Accounts are created in your Supabase project's Authentication tab, not here. Set each user's role via their "Raw User Meta Data" — e.g. <code>{"name":"Jane Smith","role":"Admin"}</code>. <b>If you forget, that account logs in as Viewer (read-only)</b> — never full access by default.
           </div>` : ''}
 
           <div class="login-security-note">
@@ -17946,7 +17983,18 @@ async function renderVoucherRegister(container) {
       <input id="vr-search" placeholder="🔍 Search ledger, narration, or voucher #…" value="${search}" style="min-width:240px;padding:7px 10px;border:1px solid var(--slate-300);border-radius:var(--radius-sm)" />
       <select id="vr-ledger-filter" style="padding:7px 10px"><option value="">All ledgers</option>${ledgers.slice().sort((a,b)=>a.name.localeCompare(b.name)).map((l) => `<option value="${l.id}" ${ledgerFilter === l.id ? 'selected' : ''}>${l.name}</option>`).join('')}</select>
       <button class="btn btn-ghost btn-sm" id="vr-mapping-btn">⚙ Mapping${hasMapping ? ' (active)' : ''}</button>
-      <button class="btn btn-teal btn-sm" id="xlsx-download">⬇ Export to Excel</button>
+      ${canBulkOrExport() ? `<button class="btn btn-teal btn-sm" id="xlsx-download">⬇ Export to Excel</button>` : ''}
+      ${_currentUserRef?.role === 'Super Admin' ? `
+      <div class="dropdown" id="vr-add-voucher-dropdown" style="position:relative">
+        <button class="btn btn-primary btn-sm" id="vr-add-voucher-btn">+ Add Voucher ▾</button>
+        <div id="vr-add-voucher-menu" style="display:none;position:absolute;top:100%;left:0;z-index:20;background:#fff;border:1px solid var(--slate-200);border-radius:var(--radius-sm);box-shadow:0 4px 14px rgba(0,0,0,.12);min-width:180px;margin-top:4px">
+          <a data-route="sales-invoice/new" style="display:block;padding:9px 14px;cursor:pointer">🧾 Sales Invoice</a>
+          <a data-route="purchase/new" style="display:block;padding:9px 14px;cursor:pointer">📦 Purchase Bill</a>
+          <a data-route="receipt" style="display:block;padding:9px 14px;cursor:pointer">💵 Receipt</a>
+          <a data-route="payment" style="display:block;padding:9px 14px;cursor:pointer">💸 Payment</a>
+          <a data-route="journal" style="display:block;padding:9px 14px;cursor:pointer">📔 Journal Entry</a>
+        </div>
+      </div>` : ''}
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-left:auto;font-size:11.5px">
         ${Object.entries(VOUCHER_TYPE_COLOR).map(([type, c]) => `<span style="display:inline-flex;align-items:center;gap:4px"><span style="width:9px;height:9px;border-radius:2px;background:${c.border};display:inline-block"></span>${type}</span>`).join('')}
       </div>
@@ -17984,9 +18032,19 @@ async function renderVoucherRegister(container) {
   container.querySelector('#vr-mapping-btn').addEventListener('click', () => {
     openMappingEditorModal(container.querySelector('#vr-mapping-root'), 'voucherRegister', () => renderVoucherRegister(container));
   });
-  container.querySelector('#xlsx-download').addEventListener('click', () => {
+  container.querySelector('#xlsx-download')?.addEventListener('click', () => {
     downloadExcel('voucher-register', ['Date', 'Voucher Ref', 'Voucher Type', 'Ledger', 'Debit', 'Credit', 'Cost Centre', 'Salesman', 'Job', 'Narration'],
       rows.map((r) => [fmtDate(r.date), r.voucherNo, r.stdType, r.ledgerNm, r.debit || '', r.credit || '', ccName.get(r.costCentreId) || '', smName.get(r.salesmanId) || '', jobName.get(r.jobId) || '', r.narration || '']));
+  });
+  const vrAddBtn = container.querySelector('#vr-add-voucher-btn');
+  const vrAddMenu = container.querySelector('#vr-add-voucher-menu');
+  vrAddBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    vrAddMenu.style.display = vrAddMenu.style.display === 'none' ? 'block' : 'none';
+  });
+  document.addEventListener('click', () => { if (vrAddMenu) vrAddMenu.style.display = 'none'; }, { once: true });
+  container.querySelectorAll('#vr-add-voucher-menu [data-route]').forEach((a) => {
+    a.addEventListener('click', () => { location.hash = a.dataset.route; });
   });
   let searchTimer;
   container.querySelector('#vr-search').addEventListener('input', (e) => {
@@ -19032,6 +19090,32 @@ function showFileProtocolSyncWarning() {
 async function boot() {
   window.addEventListener('eknomix-storage-fallback', showStorageFallbackBanner);
   if (location.protocol === 'file:' && isSupabaseConfigured()) showFileProtocolSyncWarning();
+
+  // Service worker registration lives here, at the very top of boot(), before the login check —
+  // not down in the authenticated branch below. A browser only offers to install a PWA once a
+  // service worker has successfully registered at least once; registering it only after a
+  // successful login meant a first-time visitor evaluating the site from the LOGIN screen could
+  // never see an install prompt no matter how the rest of the app looked. Runs unconditionally,
+  // logged-in or not.
+  if (location.protocol !== 'file:') {
+    if (!window.isSecureContext) {
+      // The #1 real-world cause of "can't install on any phone" — service workers (and therefore
+      // PWA installability) require HTTPS or localhost. Over plain HTTP this fails completely
+      // silently in most mobile browsers: 'serviceWorker' isn't even present on navigator, so
+      // there's no error to catch, just a permanently missing "Install" option. Surfaced as a
+      // visible, dismissible banner instead of a console-only warning, since that silence is
+      // exactly what makes this so hard to self-diagnose from a phone.
+      window.addEventListener('eknomix-app-ready', () => {
+        const banner = document.createElement('div');
+        banner.style.cssText = 'background:var(--red-tint);color:var(--red);padding:8px 16px;font-size:12.5px;text-align:center;font-weight:600;';
+        banner.textContent = '⚠️ This page is served over plain HTTP — installing as an app (and offline support) requires HTTPS. Ask whoever hosts this site to enable HTTPS.';
+        document.body.prepend(banner);
+      }, { once: true });
+    } else if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('./service-worker.js').catch((e) => console.warn('SW registration failed', e));
+    }
+  }
+
   try {
     await seedIfEmpty();
     await migrateQuestCompanyDefaults();
@@ -19130,10 +19214,6 @@ async function boot() {
       clearTimeout(_remoteChangeRerenderTimer);
       _remoteChangeRerenderTimer = setTimeout(() => router(), 400);
     });
-
-    if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-      navigator.serviceWorker.register('./service-worker.js').catch((e) => console.warn('SW registration failed', e));
-    }
   } catch (err) {
     console.error('Boot failed:', err);
     showFatalError(err);
