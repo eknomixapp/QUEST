@@ -433,6 +433,9 @@ tr.clickable-row:hover { background: var(--accent-tint) !important; }
 .form-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 12px; }
 .form-row.cols-2 { grid-template-columns: repeat(2, 1fr); }
 .form-row.cols-1 { grid-template-columns: 1fr; }
+@media (max-width: 640px) {
+  .form-row, .form-row.cols-2, .form-row.cols-3 { grid-template-columns: 1fr; }
+}
 .field label { display: block; font-size: 12px; font-weight: 600; color: var(--slate-500); margin-bottom: 4px; }
 .field input, .field select, .field textarea {
   width: 100%; padding: 8px 10px; border: 1px solid var(--slate-100);
@@ -603,6 +606,8 @@ tr.is-cancelled td { color: var(--red); background: var(--red-tint); }
   .topbar-right { gap: 8px; }
   .user-chip span.badge { display: none; }
   .main { padding: 16px; }
+  [style*="display:flex"] { flex-wrap: wrap; }
+  [style*="display: flex"] { flex-wrap: wrap; }
 }
 
 @media print {
