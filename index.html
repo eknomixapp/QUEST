@@ -12009,6 +12009,138 @@ async function seedHrTemplatesIfEmpty() {
 <p>Signed for and on behalf of {{company_name}}:</p>`
   });
   await seedIfMissing({
+    name: 'Employment Offer and Agreement (Full)', category: 'Employment Contract', recipientType: 'employee',
+    content: `<h2>EMPLOYMENT OFFER AND AGREEMENT</h2>
+<p>This Employment Offer and Agreement ("Agreement") is made on <strong>{{agreement_date}}</strong> between:</p>
+<p><strong>1. PARTIES</strong></p>
+<p><strong>Employer:</strong> {{company_name}}, having its registered/principal office at {{company_address}}, hereinafter referred to as the "Employer".</p>
+<p>AND</p>
+<p><strong>Employee:</strong> {{employee_name}}, hereinafter referred to as the "Employee".</p>
+<p>The Employer and Employee are collectively referred to as the "Parties."</p>
+
+<p><strong>2. OFFER OF EMPLOYMENT</strong></p>
+<p>The Employer is pleased to offer the Employee employment in the position of:</p>
+<table>
+<tr><td><strong>Job Title</strong></td><td>{{designation}}</td></tr>
+<tr><td><strong>Department</strong></td><td>{{department}}</td></tr>
+<tr><td><strong>Reporting To</strong></td><td>{{reporting_to}}</td></tr>
+<tr><td><strong>Place of Work</strong></td><td>{{place_of_work}}</td></tr>
+<tr><td><strong>Proposed Date of Joining</strong></td><td>{{joining_date}}</td></tr>
+</table>
+<p>The Employee agrees to accept employment on the terms and conditions contained in this Agreement.</p>
+
+<p><strong>3. NATURE OF EMPLOYMENT</strong></p>
+<p>The Employee shall be employed on a <strong>{{employment_type}}</strong> basis, commencing on {{joining_date}}. Unless otherwise specified in writing, employment will continue subject to the terms of this Agreement and applicable law.</p>
+
+<p><strong>4. PROBATION PERIOD</strong></p>
+<p>The Employee shall initially be on probation for a period of <strong>{{probation_months}} months</strong> from the date of joining. During the probation period, the Employee's performance, conduct, attendance, skills, and suitability for the position may be evaluated by the Employer, who may confirm employment, extend probation, or terminate employment in accordance with the applicable notice requirements. Confirmation of employment, where applicable, shall be communicated in writing.</p>
+
+<p><strong>5. DUTIES AND RESPONSIBILITIES</strong></p>
+<p>The Employee shall perform the duties and responsibilities associated with the position of {{designation}}, including specifically:</p>
+<ol>{{duties_list}}</ol>
+<p>The Employee shall also perform duties professionally, diligently, and honestly; follow all lawful and reasonable instructions issued by the Employer; comply with company policies and procedures; protect the interests and reputation of the Employer; maintain appropriate standards of conduct; cooperate with management, colleagues, and clients; maintain accurate records where required; and perform other reasonable duties related to the Employee's role as may be assigned from time to time. The Employer may reasonably modify or add to the Employee's duties based on operational requirements, consistent with the Employee's role and applicable law.</p>
+
+<p><strong>6. WORKING HOURS</strong></p>
+<table>
+<tr><td><strong>Working Days</strong></td><td>{{working_days}}</td></tr>
+<tr><td><strong>Working Hours</strong></td><td>{{hours_start}} to {{hours_end}}</td></tr>
+<tr><td><strong>Weekly Working Hours</strong></td><td>{{weekly_hours}}</td></tr>
+</table>
+<p>The Employee may be required to work additional hours when reasonably necessary, subject to applicable law and the Employer's policies. Any entitlement to overtime payment or compensatory leave shall be governed by applicable law and company policy.</p>
+
+<p><strong>7. COMPENSATION / SALARY</strong></p>
+<p>The Employee shall receive a gross salary of <strong>{{gross_salary}} per month</strong>, payable on/around {{payment_date}} of each month via {{payment_method}}, subject to applicable deductions and authorized withholdings.</p>
+<table>
+<tr><th>Component</th><th>Amount (QAR)</th></tr>
+<tr><td>Basic Salary</td><td>{{basic_salary}}</td></tr>
+<tr><td>Housing Allowance</td><td>{{housing_allowance}}</td></tr>
+<tr><td>Other Allowance</td><td>{{other_allowance}}</td></tr>
+<tr><td>Incentive / Commission, if applicable</td><td>{{incentive_details}}</td></tr>
+<tr><th>Total Gross Salary</th><th>{{breakdown_total}}</th></tr>
+</table>
+<p>Any bonus, incentive, commission, or other variable compensation shall be subject to the applicable scheme, eligibility requirements, performance criteria, and company policy.</p>
+
+<p><strong>8. EXPENSES AND REIMBURSEMENT</strong></p>
+<p>The Employer may reimburse the Employee for reasonable and authorized business expenses incurred in the proper performance of employment duties, supported by appropriate receipts, submitted within the required time, and approved according to company procedures. Unauthorized or personal expenses shall not be reimbursed.</p>
+
+<p><strong>9. LEAVE AND HOLIDAYS</strong></p>
+<p>The Employee shall be entitled to leave, holidays, and other statutory benefits in accordance with applicable law, the Employer's leave policy, and any additional benefits specifically provided in writing. Leave should normally be requested and approved in advance, except in emergencies.</p>
+
+<p><strong>10. BENEFITS</strong></p>
+<p>The Employee may be eligible for the following benefits, where applicable:</p>
+<ul>{{benefits_list}}</ul>
+<p>Eligibility for benefits shall be governed by applicable law and the Employer's policies, which may be amended from time to time where legally permitted.</p>
+
+<p><strong>11. PLACE OF WORK AND TRANSFER</strong></p>
+<p>The Employee's initial place of work shall be {{place_of_work}}. Where reasonably required for business purposes and permitted by applicable law, the Employer may transfer or assign the Employee to another department, office, project, client location, or work location.</p>
+
+<p><strong>12. PERFORMANCE AND CONDUCT</strong></p>
+<p>The Employee agrees to perform assigned duties efficiently and responsibly; meet reasonable performance standards and targets; maintain professional conduct; treat colleagues, customers, and others with dignity and respect; avoid discrimination, harassment, bullying, or other prohibited conduct; follow workplace safety requirements; avoid conflicts of interest; and immediately disclose any actual or potential conflict of interest. Failure to meet reasonable standards of performance or conduct may result in appropriate action in accordance with company policy and applicable law.</p>
+<p><strong>Key Performance Expectations / KPIs</strong></p>
+<ul>{{kpis_list}}</ul>
+
+<p><strong>13. CONFIDENTIALITY</strong></p>
+<p>During employment and after its termination, the Employee shall not, except as required for legitimate employment duties or by law, disclose or improperly use confidential information belonging to the Employer, including customer/client information, business plans, financial information, pricing, trade secrets, technical information, software/systems/databases, marketing information, employee information, supplier information, and any other non-public business information. The Employee shall take reasonable steps to protect such information from unauthorized access, disclosure, loss, or misuse.</p>
+
+<p><strong>14. INTELLECTUAL PROPERTY</strong></p>
+<p>To the extent permitted by applicable law, any work product, documents, designs, software, inventions, discoveries, developments, reports, materials, or other intellectual property created by the Employee within the scope of employment or using the Employer's resources shall belong to the Employer. The Employee agrees to execute reasonable documents necessary to confirm or protect the Employer's ownership rights.</p>
+
+<p><strong>15. COMPANY PROPERTY</strong></p>
+<p>Any property provided to the Employee by the Employer (computers, laptops, mobile phones, keys, access cards, documents, software, equipment, vehicles, tools, or other assets) shall remain the property of the Employer unless otherwise agreed in writing. Upon request or termination of employment, the Employee shall promptly return all company property.</p>
+
+<p><strong>16. DATA PROTECTION AND INFORMATION SECURITY</strong></p>
+<p>The Employee shall comply with all applicable data protection, privacy, cybersecurity, and information security requirements, and shall not access information without authorization, share passwords or access credentials, transfer confidential information to unauthorized persons, use company data for personal or unauthorized purposes, or store/transmit company information using unauthorized systems or services.</p>
+
+<p><strong>17. CONFLICT OF INTEREST AND OUTSIDE EMPLOYMENT</strong></p>
+<p>The Employee shall promptly disclose any activity, business interest, outside employment, or relationship that may create an actual or potential conflict of interest, and shall not undertake outside employment or business activities that materially interfere with the Employee's duties or create an unlawful or improper conflict of interest.</p>
+
+<p><strong>18. COMPANY POLICIES</strong></p>
+<p>The Employee agrees to comply with the Employer's policies and procedures as issued or amended from time to time, which may include a code of conduct, attendance and leave policy, information security policy, anti-harassment policy, health and safety policy, IT and acceptable use policy, expense policy, and other workplace policies. Company policies do not necessarily form part of this Agreement unless expressly stated otherwise.</p>
+
+<p><strong>19. NOTICE AND TERMINATION</strong></p>
+<p>After completion of probation, either Party may terminate the employment relationship by providing <strong>{{notice_post}} months'</strong> written notice, or payment in lieu of notice where permitted by applicable law and agreed by the Parties. During the probation period, the applicable notice period shall be <strong>{{notice_probation}} days</strong>, subject to applicable law. The Employer may take disciplinary action, including termination where legally justified, in cases involving serious misconduct or other circumstances recognized under applicable law. Upon termination, the Employee shall complete a proper handover of duties; return all company property; return or securely delete confidential information as instructed; settle any authorized financial obligations; and comply with continuing obligations under this Agreement.</p>
+
+<p><strong>20. NON-SOLICITATION</strong></p>
+<p>For a period of <strong>{{nonsolicit_months}} months</strong> following termination of employment, and only to the extent permitted by applicable law, the Employee shall not improperly solicit the Employer's employees, customers, or clients for the purpose of diverting business or employment opportunities. This clause shall be interpreted only to the extent enforceable under applicable law. <em>(Delete this clause in the editor below if not applicable to this offer.)</em></p>
+
+<p><strong>21. DISCIPLINARY ACTION</strong></p>
+<p>The Employee acknowledges that violations of company rules, misconduct, poor performance, breach of confidentiality, unauthorized absence, fraud, dishonesty, harassment, or other serious violations may result in disciplinary action, taken in accordance with applicable law and the Employer's applicable procedures.</p>
+
+<p><strong>22. GOVERNING LAW AND JURISDICTION</strong></p>
+<p>This Agreement shall be governed by and interpreted in accordance with the laws applicable in <strong>{{governing_law}}</strong>. Any disputes shall be subject to the jurisdiction of the competent courts or other legally applicable dispute-resolution mechanism.</p>
+
+<p><strong>23. ENTIRE AGREEMENT</strong></p>
+<p>This Agreement, together with any schedules or documents expressly incorporated into it, represents the entire understanding between the Parties concerning the Employee's employment. Any amendment must be made in writing and signed or otherwise validly approved by the Parties, where required.</p>
+
+<p><strong>24. SEVERABILITY</strong></p>
+<p>If any provision of this Agreement is found to be invalid or unenforceable, the remaining provisions shall continue to the extent permitted by applicable law.</p>
+
+<p><strong>25. ACCEPTANCE OF OFFER</strong></p>
+<p>By signing below, the Employee confirms that they have read and understood this Agreement, voluntarily accept the offer of employment, agree to comply with the terms and conditions contained herein, and have had an opportunity to seek independent advice regarding this Agreement if desired.</p>
+
+<table style="margin-top:24px">
+<tr><td style="width:50%;vertical-align:top">
+<strong>FOR THE EMPLOYER</strong><br/><br/>
+Company: {{company_name}}<br/><br/>
+Signature: ______________________<br/><br/>
+Date: ______________________
+</td><td style="width:50%;vertical-align:top">
+<strong>EMPLOYEE</strong><br/><br/>
+Name: {{employee_name}}<br/><br/>
+Signature: ______________________<br/><br/>
+Date: ______________________
+</td></tr>
+</table>
+
+<p style="margin-top:20px"><strong>SCHEDULE A — JOB DESCRIPTION</strong></p>
+<p><strong>Employee:</strong> {{employee_name}} &nbsp;&nbsp; <strong>Position:</strong> {{designation}}</p>
+<p><strong>Specific Duties and Responsibilities</strong></p>
+<ol>{{duties_list}}</ol>
+<p><strong>Key Performance Expectations / KPIs</strong></p>
+<ul>{{kpis_list}}</ul>
+<p>The Employee acknowledges that this job description may be reasonably updated based on business requirements and the development of the role.</p>`
+  });
+  await seedIfMissing({
     name: 'Client Service Contract (General)', category: 'Client Contract', recipientType: 'customer',
     content: `<p>This Service Agreement ("Agreement") is made on {{today}} between <strong>{{company_name}}</strong> ("the Agency") and <strong>{{client_name}}</strong> of {{client_address}} ("the Client").</p>
 <ol>
@@ -12331,6 +12463,18 @@ async function openHrTemplateModal(container, id) {
   });
 }
 
+/** Formats a 24-hour "HH:MM" time input value (from <input type="time">) into a readable
+ *  12-hour form, e.g. "08:00" -> "8:00 AM" — used in generated documents (offer letters,
+ *  contracts) where "08:00" reads as a raw form value rather than natural document text. */
+function fmtTime12(hhmm) {
+  if (!hhmm) return '';
+  const [h, m] = hhmm.split(':').map(Number);
+  if (Number.isNaN(h) || Number.isNaN(m)) return hhmm;
+  const period = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${String(m).padStart(2, '0')} ${period}`;
+}
+
 /** Fills a template's placeholders from the chosen recipient (employee, customer, or a manual
  *  name) and returns the resulting HTML — used to seed the editable preview before issuing. */
 async function fillTemplatePlaceholders(template, recipient) {
@@ -12349,11 +12493,41 @@ async function fillTemplatePlaceholders(template, recipient) {
   if (recipient.kind === 'employee') {
     const elements = await localDB.getAll('salaryElements');
     const totals = salaryStructureTotals(recipient.record, Object.fromEntries(elements.map((el) => [el.id, el])));
+    const extra = recipient.extra || {};
+    const toListItems = (text) => (text || '').split('\n').map((l) => l.trim()).filter(Boolean).map((l) => `<li>${l}</li>`).join('');
+    const basic = extra.basicSalary ? Number(extra.basicSalary) : null;
+    const housing = extra.housingAllowance ? Number(extra.housingAllowance) : null;
+    const other = extra.otherAllowance ? Number(extra.otherAllowance) : null;
+    const breakdownGross = (basic || 0) + (housing || 0) + (other || 0);
+
     set('employee_name', recipient.record.name);
     set('designation', recipient.record.designation);
     set('joining_date', recipient.record.joiningDate ? fmtDate(recipient.record.joiningDate) : '');
     set('gross_salary', fmtMoney(totals.gross));
     set('recipient_name', recipient.record.name);
+    set('department', extra.department);
+    set('reporting_to', extra.reportingTo);
+    set('place_of_work', extra.placeOfWork);
+    set('employment_type', extra.employmentType);
+    set('working_days', extra.workingDays);
+    set('weekly_hours', extra.weeklyHours);
+    set('hours_start', extra.hoursStart ? fmtTime12(extra.hoursStart) : '');
+    set('hours_end', extra.hoursEnd ? fmtTime12(extra.hoursEnd) : '');
+    set('probation_months', extra.probationMonths);
+    set('notice_probation', extra.noticeProbation);
+    set('notice_post', extra.noticePost);
+    set('governing_law', extra.governingLaw);
+    set('basic_salary', basic !== null ? fmtMoney(basic) : '');
+    set('housing_allowance', housing !== null ? fmtMoney(housing) : '');
+    set('other_allowance', other !== null ? fmtMoney(other) : '');
+    set('incentive_details', extra.incentiveDetails || 'N/A');
+    set('breakdown_total', breakdownGross ? fmtMoney(breakdownGross) : fmtMoney(totals.gross));
+    set('payment_date', extra.paymentDate);
+    set('payment_method', extra.paymentMethod);
+    set('duties_list', toListItems(extra.duties) || '<li>[To be specified]</li>');
+    set('kpis_list', toListItems(extra.kpis) || '<li>[To be specified]</li>');
+    set('benefits_list', toListItems(extra.benefits) || '<li>As per Company policy</li>');
+    set('nonsolicit_months', extra.nonSolicitMonths);
   } else if (recipient.kind === 'customer') {
     set('client_name', recipient.record.name);
     set('client_contact', recipient.record.contactPerson || recipient.record.mobile || recipient.record.email || '');
@@ -12405,7 +12579,41 @@ async function openGenerateFromTemplateModal(container, templateId) {
   const pickerHtml = recipientType === 'employee' ? `
       <div class="field"><label>Employee</label>
         <select id="f-recipient"><option value="">— Select —</option>${employees.sort((a, b) => a.name.localeCompare(b.name)).map((e) => `<option value="${e.id}">${e.name}</option>`).join('')}</select>
-      </div>`
+      </div>
+      <div class="section-title" style="margin-top:10px;font-size:12.5px">Position details <span style="font-weight:400;color:var(--slate-500)">(for a full Offer / Employment Agreement — leave blank if this template doesn't need them)</span></div>
+      <div class="form-row cols-2">
+        <div class="field"><label>Department</label><input id="f-department" placeholder="e.g. Marketing" /></div>
+        <div class="field"><label>Reporting To</label><input id="f-reporting-to" placeholder="e.g. Creative Director" /></div>
+        <div class="field"><label>Place of Work</label><input id="f-place-of-work" placeholder="e.g. Head Office, Doha" /></div>
+        <div class="field"><label>Employment Type</label>
+          <select id="f-employment-type"><option>Full-Time</option><option>Part-Time</option><option>Fixed-Term Contract</option><option>Permanent</option><option>Other</option></select>
+        </div>
+      </div>
+      <div class="section-title" style="margin-top:10px;font-size:12.5px">Working hours &amp; probation</div>
+      <div class="form-row cols-2">
+        <div class="field"><label>Working Days</label><input id="f-working-days" placeholder="e.g. Sunday to Thursday" /></div>
+        <div class="field"><label>Weekly Working Hours</label><input id="f-weekly-hours" type="number" placeholder="e.g. 48" /></div>
+        <div class="field"><label>Working Hours — Start</label><input id="f-hours-start" type="time" value="08:00" /></div>
+        <div class="field"><label>Working Hours — End</label><input id="f-hours-end" type="time" value="17:00" /></div>
+        <div class="field"><label>Probation Period (months)</label><input id="f-probation-months" type="number" placeholder="e.g. 3" /></div>
+        <div class="field"><label>Notice Period — During Probation (days)</label><input id="f-notice-probation" type="number" placeholder="e.g. 7" /></div>
+        <div class="field"><label>Notice Period — After Probation (months)</label><input id="f-notice-post" type="number" placeholder="e.g. 1" /></div>
+        <div class="field"><label>Governing Law / Country</label><input id="f-governing-law" placeholder="e.g. State of Qatar" /></div>
+      </div>
+      <div class="section-title" style="margin-top:10px;font-size:12.5px">Salary breakdown <span style="font-weight:400;color:var(--slate-500)">(defaults from this employee's payroll structure — override here if the offer differs)</span></div>
+      <div class="form-row cols-2">
+        <div class="field"><label>Basic Salary (QAR)</label><input id="f-basic-salary" type="number" placeholder="e.g. 4000" /></div>
+        <div class="field"><label>Housing Allowance (QAR)</label><input id="f-housing-allowance" type="number" placeholder="e.g. 1000" /></div>
+        <div class="field"><label>Other Allowance (QAR)</label><input id="f-other-allowance" type="number" placeholder="e.g. 500" /></div>
+        <div class="field"><label>Incentive / Commission <span style="font-weight:400;color:var(--slate-500)">(details, if any)</span></label><input id="f-incentive-details" placeholder="e.g. As per sales incentive scheme" /></div>
+        <div class="field"><label>Payment Date/Day</label><input id="f-payment-date" placeholder="e.g. last working day" /></div>
+        <div class="field"><label>Payment Method</label><input id="f-payment-method" value="Bank Transfer" /></div>
+      </div>
+      <div class="section-title" style="margin-top:10px;font-size:12.5px">Duties &amp; performance <span style="font-weight:400;color:var(--slate-500)">(one per line)</span></div>
+      <div class="field"><label>Specific Duties</label><textarea id="f-duties" rows="4" placeholder="One duty per line, e.g.&#10;Plan and execute social media campaigns&#10;Manage the content calendar"></textarea></div>
+      <div class="field"><label>Key Performance Expectations / KPIs</label><textarea id="f-kpis" rows="3" placeholder="One KPI per line, e.g.&#10;20% growth in engagement per quarter"></textarea></div>
+      <div class="field"><label>Benefits <span style="font-weight:400;color:var(--slate-500)">(one per line, e.g. Health Insurance, Annual Air Ticket)</span></label><textarea id="f-benefits" rows="2"></textarea></div>
+      <div class="field"><label>Non-Solicitation Period (months) <span style="font-weight:400;color:var(--slate-500)">(leave blank to omit this clause manually in the editor below)</span></label><input id="f-nonsolicit-months" type="number" placeholder="e.g. 6" /></div>`
     : recipientType === 'customer' ? `
       <div class="field"><label>Client</label>
         <select id="f-recipient"><option value="">— Select —</option>${customers.sort((a, b) => a.name.localeCompare(b.name)).map((c) => `<option value="${c.id}">${c.name}</option>`).join('')}</select>
@@ -12468,7 +12676,33 @@ async function openGenerateFromTemplateModal(container, templateId) {
       const id = root.querySelector('#f-recipient').value;
       if (!id) { toast('Select an employee', 'error'); return; }
       const record = await localDB.get('payrollEmployees', id);
-      recipient = { kind: 'employee', record };
+      recipient = {
+        kind: 'employee', record,
+        extra: {
+          department: root.querySelector('#f-department').value,
+          reportingTo: root.querySelector('#f-reporting-to').value,
+          placeOfWork: root.querySelector('#f-place-of-work').value,
+          employmentType: root.querySelector('#f-employment-type').value,
+          workingDays: root.querySelector('#f-working-days').value,
+          weeklyHours: root.querySelector('#f-weekly-hours').value,
+          hoursStart: root.querySelector('#f-hours-start').value,
+          hoursEnd: root.querySelector('#f-hours-end').value,
+          probationMonths: root.querySelector('#f-probation-months').value,
+          noticeProbation: root.querySelector('#f-notice-probation').value,
+          noticePost: root.querySelector('#f-notice-post').value,
+          governingLaw: root.querySelector('#f-governing-law').value,
+          basicSalary: root.querySelector('#f-basic-salary').value,
+          housingAllowance: root.querySelector('#f-housing-allowance').value,
+          otherAllowance: root.querySelector('#f-other-allowance').value,
+          incentiveDetails: root.querySelector('#f-incentive-details').value,
+          paymentDate: root.querySelector('#f-payment-date').value,
+          paymentMethod: root.querySelector('#f-payment-method').value,
+          duties: root.querySelector('#f-duties').value,
+          kpis: root.querySelector('#f-kpis').value,
+          benefits: root.querySelector('#f-benefits').value,
+          nonSolicitMonths: root.querySelector('#f-nonsolicit-months').value
+        }
+      };
       recipientLabel = record.name;
     } else if (recipientType === 'customer') {
       const id = root.querySelector('#f-recipient').value;
