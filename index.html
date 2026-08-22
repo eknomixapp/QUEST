@@ -4857,22 +4857,22 @@ async function buildInvoicePdf(jsPDF, inv) {
 
   if (brand.logoDataUrl) {
     const naturalDims = await loadImageDimensions(brand.logoDataUrl);
-    const box = fitImageBox(naturalDims, 60, 44);
+    const box = fitImageBox(naturalDims, 142, 58); // matches Print's letterhead proportions (190×78 CSS px)
     try {
       doc.addImage(brand.logoDataUrl, imageFormatFromDataUrl(brand.logoDataUrl), marginX, y - 30, box.width, box.height);
       textStartX = marginX + box.width + 14;
     } catch (e) { console.warn('Could not embed logo in PDF:', e.message); }
   }
 
+  const nameMaxW = rightX - 140 - textStartX; // leaves room for the INVOICE title block on the right, however far the logo pushed textStartX
+  const nameLines = doc.splitTextToSize(brand.name, Math.max(nameMaxW, 80));
   doc.setFontSize(16); doc.setFont(undefined, 'bold');
-  doc.text(brand.name, textStartX, y);
-  let addrY;
+  nameLines.forEach((line, i) => doc.text(line, textStartX, y + i * 17));
+  let addrY = y + nameLines.length * 17 - 3;
   if (brand.tagline) {
     doc.setFontSize(9.5); doc.setFont(undefined, 'bold'); doc.setTextColor(15, 122, 108);
-    doc.text(brand.tagline, textStartX, y + 13);
-    addrY = y + 27;
-  } else {
-    addrY = y + 16;
+    doc.text(brand.tagline, textStartX, addrY);
+    addrY += 14;
   }
   doc.setFontSize(9); doc.setFont(undefined, 'normal'); doc.setTextColor(90, 90, 90);
   const lineHeight = 11;
@@ -4900,9 +4900,11 @@ async function buildInvoicePdf(jsPDF, inv) {
   y += 20;
 
   doc.setTextColor(15, 27, 45); doc.setFontSize(10);
-  doc.text(`Customer: ${inv.customerName}`, marginX, y);
+  const custMaxW = (rightX - marginX) - 110;
+  const custLines = doc.splitTextToSize(`Customer: ${inv.customerName}`, custMaxW);
+  custLines.forEach((line, i) => doc.text(line, marginX, y + i * 13));
   doc.text(`Status: ${inv.status}`, rightX, y, { align: 'right' });
-  y += 24;
+  y += Math.max(24, custLines.length * 13 + 11);
 
   // Column layout mirrors printInvoice's HTML table exactly, so Print and Share always show the
   // same information — service invoices get a Description column (this was the actual "share
@@ -4933,13 +4935,14 @@ async function buildInvoicePdf(jsPDF, inv) {
 
   doc.setFont(undefined, 'normal'); doc.setFontSize(9); doc.setTextColor(30, 30, 30);
   inv.lines.forEach((l, i) => {
+    const nameLines = doc.splitTextToSize(String(l.itemName || ''), nameW);
     const descLines = isService && l.description ? doc.splitTextToSize(String(l.description), descW) : [];
-    const rowLines = Math.max(1, descLines.length);
+    const rowLines = Math.max(1, nameLines.length, descLines.length);
     const rowHeight = 14 + (rowLines - 1) * 11 + 6;
-    if (y + rowHeight > 720) { doc.addPage(); y = 50; }
+    if (y + rowHeight > 700) { doc.addPage(); y = 50; }
     if (i % 2 === 1) { doc.setFillColor(247, 249, 251); doc.rect(marginX, y, rightX - marginX, rowHeight, 'F'); }
     doc.setTextColor(30, 30, 30);
-    doc.text(String(l.itemName || ''), nameX, y + 14, { maxWidth: nameW });
+    nameLines.forEach((line, li) => doc.text(line, nameX, y + 14 + li * 11));
     descLines.forEach((line, li) => doc.text(line, descX, y + 14 + li * 11));
     doc.text(String(l.qty), qtyX, y + 14);
     doc.text(fmtMoney(l.rate), rateX, y + 14);
@@ -4950,6 +4953,8 @@ async function buildInvoicePdf(jsPDF, inv) {
   });
 
   y += 16;
+  const totalsRowCount = 2 + (inv.additionalDiscount > 0 ? 1 : 0) + (inv.freight > 0 ? 1 : 0) + (hasTax ? 1 : 0) + 2; // Subtotal + Grand Total + optional rows + Received + Balance
+  if (y + totalsRowCount * 16 > 760) { doc.addPage(); y = 50; }
   const totalsX = rightX - 200;
   const totalRow = (label, value, bold) => {
     doc.setFont(undefined, bold ? 'bold' : 'normal');
@@ -4968,6 +4973,7 @@ async function buildInvoicePdf(jsPDF, inv) {
   totalRow('Balance Due', balance, true);
 
   if (brand.signatoryName || brand.sealDataUrl) {
+    if (y + 90 > 780) { doc.addPage(); y = 50; }
     y += 40;
     if (brand.sealDataUrl) {
       const sealDims = await loadImageDimensions(brand.sealDataUrl);
