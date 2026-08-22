@@ -2,6 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+<meta http-equiv="Pragma" content="no-cache" />
+<meta http-equiv="Expires" content="0" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Eknomix ERP Lite</title>
 <meta name="theme-color" content="#13233F" />
@@ -1732,16 +1735,36 @@ const SUPABASE_URL = 'https://wvafqdxwnposrdlrxbia.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_F2tAZa9eQrNXW6J0Kogwag_mm9rgQy2';
 
 let _supabaseClientLibPromise = null;
+function loadScriptOnce(src) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = src;
+    script.onload = () => resolve(window.supabase);
+    script.onerror = () => reject(new Error(`Failed to load ${src}`));
+    document.head.appendChild(script);
+  });
+}
+
+/** Loads the Supabase client library, with automatic retry across two CDNs and NO permanent
+ *  failure caching. Previously, a single transient network blip while loading the SDK (very
+ *  common on mobile connections — a dropped packet, a brief signal loss) got cached forever as
+ *  a rejected promise: every subsequent getSupabaseClient() call for the rest of that page
+ *  session immediately re-threw the SAME stale error, even once the network recovered seconds
+ *  later, silently breaking login until a full page reload. This is very likely the real cause
+ *  behind "sometimes doesn't work, especially on other devices/networks" — it only takes one bad
+ *  moment during page load, not a bad password, to trigger it. Now: on any failure, the cached
+ *  promise is cleared so the next attempt gets a genuinely fresh try, and a second CDN
+ *  (unpkg, in case jsDelivr is blocked by a firewall/ad-blocker or is itself having a bad moment)
+ *  is tried before giving up. */
 function loadSupabaseClientLib() {
   if (window.supabase) return Promise.resolve(window.supabase);
   if (_supabaseClientLibPromise) return _supabaseClientLibPromise;
-  _supabaseClientLibPromise = new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js';
-    script.onload = () => resolve(window.supabase);
-    script.onerror = () => reject(new Error('Could not load the Supabase client library — check your internet connection.'));
-    document.head.appendChild(script);
-  });
+  _supabaseClientLibPromise = loadScriptOnce('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js')
+    .catch(() => loadScriptOnce('https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.js'))
+    .catch((e) => {
+      _supabaseClientLibPromise = null; // don't poison future attempts — let the next call retry from scratch
+      throw new Error('Could not load the Supabase client library from either CDN — check your internet connection and try again.');
+    });
   return _supabaseClientLibPromise;
 }
 
@@ -2498,6 +2521,11 @@ function initSyncListeners() {
         } else {
           console.info('Supabase sync connected — no shared records yet (nothing pushed by anyone so far).');
         }
+      } else {
+        // Real data arrived after the current page already rendered from (possibly empty, or
+        // stale) local storage — re-render now so it's actually visible without the person
+        // needing to manually navigate away and back or refresh the whole page.
+        window.dispatchEvent(new CustomEvent('eknomix-remote-change', { detail: { source: 'initial-pull' } }));
       }
     });
   } else if (isConfigured()) {
@@ -3002,15 +3030,14 @@ async function saveReportMapping(reportKey, mapping) {
 /** Registry of reports configurable via the mapping engine — shown centrally under
  *  Settings -> Reports & Mapping (Option 2), and each report also exposes its own
  *  "⚙ Mapping" control (Option 1) which edits the very same saved mapping.
- *  Outstanding Receivables/Payables are NOT here — unlike these voucher-type-mapped
- *  reports, they always draw strictly from the Sundry Debtors/Sundry Creditors group
- *  and classify each ledger by its actual balance direction (see partyLedgerBalances),
- *  so there's nothing to configure and no "unmapped = shows every ledger" trap. */
+ *  Sales Register, Purchase Register, and Cash Book are NOT here — each reads directly from
+ *  the actual posted ledger entries for its own voucher type (SalesInvoice / Purchase /
+ *  Cash-Bank group membership), the same way Tally's registers work: the voucher type recorded
+ *  at the moment of posting IS the classification, so there's nothing to configure and no
+ *  "unmapped = shows every ledger" trap. Voucher Register is the one deliberately-configurable
+ *  exception — its whole purpose is to let someone build a custom cross-section of the ledger. */
 const REPORT_MAPPING_REGISTRY = [
-  { key: 'voucherRegister', label: 'Voucher Register (Centralized)', hint: 'The full double-entry detail behind every other mapped report. Leave unmapped to see everything.', defaultVoucherTypes: [] },
-  { key: 'salesRegisterMapped', label: 'Sales Register (Mapped)', hint: 'Typically mapped to the Sales / Revenue group, with Sales vouchers only.', defaultVoucherTypes: ['Sales Voucher'] },
-  { key: 'purchaseRegisterMapped', label: 'Purchase Register (Mapped)', hint: 'Typically mapped to Purchase / Expense / Inventory accounts, with Purchase vouchers only.', defaultVoucherTypes: ['Purchase Voucher'] },
-  { key: 'cashBankMapped', label: 'Cash / Bank Report (Mapped)', hint: 'Typically mapped to Cash & Bank ledgers, with Receipt + Payment + Contra (+ Journal) vouchers.', defaultVoucherTypes: ['Receipt Voucher', 'Payment Voucher', 'Contra Voucher', 'Journal Voucher'] }
+  { key: 'voucherRegister', label: 'Voucher Register (Centralized)', hint: 'The full double-entry detail behind every other report. Leave unmapped to see everything.', defaultVoucherTypes: [] }
 ];
 
 /** Shared mapping-editor modal used both from a report's own "⚙ Mapping" button (Option 1 —
@@ -9812,7 +9839,7 @@ async function renderPartnersAppropriation(container) {
     </div>
 
     <div class="grid grid-4" style="margin-bottom:16px">
-      ${kpi('Sales (excl. tax)', salesTotal, 'teal', dateRouteLink('report-sales-register-mapped', from, to), '📈')}
+      ${kpi('Sales (excl. tax)', salesTotal, 'teal', dateRouteLink('report-sales-register', from, to), '📈')}
       ${kpi('Other Income', otherIncome, 'blue', dateRouteLink('report-pl', from, to), '💵')}
       ${kpi('Expenses (all types)', pl.totalExpense, 'rose', dateRouteLink('report-pl', from, to), '💸')}
       ${kpi('Net Profit', pl.netProfit, pl.netProfit >= 0 ? 'teal' : 'red', dateRouteLink('report-pl', from, to), pl.netProfit >= 0 ? '📈' : '📉')}
@@ -12117,7 +12144,7 @@ async function seedHrTemplatesIfEmpty() {
 
 <p><strong>25. ACCEPTANCE OF OFFER</strong></p>
 <p>By signing below, the Employee confirms that they have read and understood this Agreement, voluntarily accept the offer of employment, agree to comply with the terms and conditions contained herein, and have had an opportunity to seek independent advice regarding this Agreement if desired.</p>
-
+<!--TRAILING-->
 <table style="margin-top:24px">
 <tr><td style="width:50%;vertical-align:top">
 <strong>FOR THE EMPLOYER</strong><br/><br/>
@@ -12463,6 +12490,46 @@ async function openHrTemplateModal(container, id) {
   });
 }
 
+/** Splits a filled template's HTML into independently toggleable sections, using the numbered
+ *  "<p><strong>N. HEADING</strong></p>" convention already used throughout the Employment Offer
+ *  template (and any future template following the same style — this isn't hardcoded to one
+ *  template). Returns null if no such headings are found, so callers can simply skip offering
+ *  section add/remove for templates that don't use this structure rather than showing an empty
+ *  or broken checklist.
+ *
+ *  A "{{! -- TRAILING -- }}"-style HTML comment marker (written as <!--TRAILING--> in the
+ *  template) splits off a block that's never offered as removable — signatures and schedules
+ *  shouldn't be one accidental unchecked box away from vanishing from a legal document. */
+function splitTemplateIntoSections(html) {
+  const TRAILING_MARKER = '<!--TRAILING-->';
+  const markerIdx = html.indexOf(TRAILING_MARKER);
+  const main = markerIdx === -1 ? html : html.slice(0, markerIdx);
+  const trailing = markerIdx === -1 ? '' : html.slice(markerIdx + TRAILING_MARKER.length);
+
+  const headingRe = /<p><strong>(\d+)\.\s*([^<]+)<\/strong><\/p>/g;
+  const matches = [...main.matchAll(headingRe)];
+  if (!matches.length) return null;
+
+  const preamble = main.slice(0, matches[0].index);
+  const sections = matches.map((m, i) => {
+    const start = m.index;
+    const end = i + 1 < matches.length ? matches[i + 1].index : main.length;
+    return { title: m[2].trim(), html: main.slice(start, end), included: true };
+  });
+  return { preamble, sections, trailing };
+}
+
+/** Rebuilds one HTML string from a section-split structure, renumbering the "N." prefix on each
+ *  still-included section's heading sequentially — so removing section 3 of 5 doesn't leave a
+ *  document that jumps straight from "2. ..." to "4. ...", which reads as broken/incomplete on
+ *  a legal document. */
+function rebuildFromSections(split) {
+  const included = split.sections.filter((s) => s.included);
+  const renumbered = included.map((s, i) => s.html.replace(/^(<p><strong>)\d+(\.\s*)/, `$1${i + 1}$2`)).join('');
+  return split.preamble + renumbered + split.trailing;
+}
+
+
 /** Formats a 24-hour "HH:MM" time input value (from <input type="time">) into a readable
  *  12-hour form, e.g. "08:00" -> "8:00 AM" — used in generated documents (offer letters,
  *  contracts) where "08:00" reads as a raw form value rather than natural document text. */
@@ -12654,6 +12721,7 @@ async function openGenerateFromTemplateModal(container, templateId) {
               <div class="field"><label>Issued To</label><input id="f-issued-to" /></div>
               <div class="field"><label>Purpose</label><input id="f-purpose" value="${template.name}" /></div>
             </div>
+            <div id="sections-panel"></div>
             <div class="field"><label>Edit before issuing</label>${richTextEditorHtml('f-preview-content', '', 'Loading…', false)}</div>
             <div class="page-subtitle" style="margin-top:6px">This will print on the company letterhead and log an entry in the Letterhead Register (issued to, purpose, date, issued by).</div>
           </div>
@@ -12738,8 +12806,66 @@ async function openGenerateFromTemplateModal(container, templateId) {
     root.querySelector('#preview-step').style.display = '';
     root.querySelector('#do-generate').style.display = '';
     root.querySelector('#f-issued-to').value = recipientLabel;
-    root.querySelector('#f-preview-content').innerHTML = filled;
     bindRichTextEditor(root, 'f-preview-content');
+
+    let sectionSplit = splitTemplateIntoSections(filled);
+    let nextCustomNum = 1000; // internal id space for custom-added sections, never shown to the user
+    const editorEl = () => root.querySelector('#f-preview-content');
+    const panelEl = root.querySelector('#sections-panel');
+
+    function renderEditorFromSections() {
+      editorEl().innerHTML = rebuildFromSections(sectionSplit);
+    }
+
+    function renderSectionsPanel() {
+      if (!sectionSplit) { panelEl.innerHTML = ''; return; }
+      panelEl.innerHTML = `
+        <div class="card" style="margin-bottom:12px;background:var(--paper)">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <strong style="font-size:12.5px">Sections</strong>
+            <button type="button" class="btn btn-ghost btn-sm" id="sp-add-section">+ Add Section</button>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px;max-height:180px;overflow-y:auto">
+            ${sectionSplit.sections.map((s, i) => `
+              <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;padding:3px 0">
+                <input type="checkbox" data-sec-idx="${i}" ${s.included ? 'checked' : ''} />
+                <span style="${s.included ? '' : 'text-decoration:line-through;color:var(--slate-400)'}">${i + 1}. ${s.title}</span>
+              </label>`).join('')}
+          </div>
+          <div id="sp-add-form" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid var(--slate-100)">
+            <div class="field"><label>New Section Heading</label><input id="sp-new-title" placeholder="e.g. RELOCATION ASSISTANCE" style="text-transform:uppercase" /></div>
+            <div class="field"><label>Section Text</label><textarea id="sp-new-body" rows="3" placeholder="Clause text…"></textarea></div>
+            <div style="display:flex;gap:8px;margin-top:6px">
+              <button type="button" class="btn btn-primary btn-sm" id="sp-confirm-add">Add to Document</button>
+              <button type="button" class="btn btn-ghost btn-sm" id="sp-cancel-add">Cancel</button>
+            </div>
+          </div>
+        </div>`;
+      panelEl.querySelectorAll('[data-sec-idx]').forEach((cb) => {
+        cb.addEventListener('change', () => {
+          sectionSplit.sections[Number(cb.dataset.secIdx)].included = cb.checked;
+          renderSectionsPanel();
+          renderEditorFromSections();
+        });
+      });
+      panelEl.querySelector('#sp-add-section').addEventListener('click', () => {
+        panelEl.querySelector('#sp-add-form').style.display = '';
+      });
+      panelEl.querySelector('#sp-cancel-add')?.addEventListener('click', () => renderSectionsPanel());
+      panelEl.querySelector('#sp-confirm-add')?.addEventListener('click', () => {
+        const title = panelEl.querySelector('#sp-new-title').value.trim().toUpperCase();
+        const body = panelEl.querySelector('#sp-new-body').value.trim();
+        if (!title || !body) { toast('Enter both a heading and the section text', 'error'); return; }
+        const escaped = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const bodyHtml = body.split('\n').filter((l) => l.trim()).map((l) => `<p>${escaped(l)}</p>`).join('');
+        sectionSplit.sections.push({ title, html: `<p><strong>${nextCustomNum++}. ${escaped(title)}</strong></p>${bodyHtml}`, included: true });
+        renderSectionsPanel();
+        renderEditorFromSections();
+      });
+    }
+
+    if (sectionSplit) { renderSectionsPanel(); renderEditorFromSections(); }
+    else { editorEl().innerHTML = filled; } // no numbered sections detected — plain editable content, same as before
   });
 
   root.querySelector('#do-generate').addEventListener('click', async () => {
@@ -13214,7 +13340,7 @@ async function renderDashboard(container) {
           </div>
         </div>
       </div>
-      ${kpi('Sales (excl. tax) — ' + period, salesThisMonth, 'teal', dateRouteLink('report-sales-register-mapped', from, to), '📈')}
+      ${kpi('Sales (excl. tax) — ' + period, salesThisMonth, 'teal', dateRouteLink('report-sales-register', from, to), '📈')}
       ${kpi('Expenses — ' + period, pl.totalExpense, 'rose', dateRouteLink('report-pl', from, to), '💸')}
       ${kpi('Gross Profit — ' + period, grossProfit, grossProfit >= 0 ? 'teal' : 'red', dateRouteLink('report-pl', from, to), grossProfit >= 0 ? '📈' : '📉', true)}
     </div>
@@ -16818,7 +16944,7 @@ const ROLE_NAV_ALLOW = {
   // visible even without full Dashboard access, since an accountant chasing collections/payables
   // needs those two regardless of what else they can see.
   'Accountant': ['cash-book', 'report-cash-book', 'sales-invoice', 'quotation', 'receipt', 'customer', 'ask-eknomix',
-    'report-sales-register', 'report-sales-register-mapped', 'report-receivables', 'report-receivables-mapped',
+    'report-sales-register', 'report-receivables', 'report-receivables-mapped',
     'report-payables', 'report-payables-mapped', 'report-advances', 'report-statement',
     // HR / Payroll module — added so Accountant can run payroll alongside their existing scope.
     'payroll-dashboard', 'payroll-employees', 'payroll-attendance', 'payroll-salary-structure',
@@ -17095,9 +17221,16 @@ async function renderLoginScreen(container, onLogin, mode = 'login') {
     const username = container.querySelector('#login-username').value.trim();
     const password = container.querySelector('#login-password').value;
     const errorEl = container.querySelector('#login-error');
+    const loginBtn = container.querySelector('#login-btn');
     errorEl.classList.remove('show');
     const showError = (msg) => { errorEl.textContent = msg; errorEl.classList.add('show'); };
     if (!username || !password) { showError(`Enter both ${cloudReady && !sheetsReady ? 'email' : 'username'} and password.`); return; }
+    // Guards against a double-tap on mobile firing two concurrent sign-in attempts — a genuine,
+    // reproducible race that can make the second request fail confusingly even with the exact
+    // right password, since it's now competing with an in-flight request using the same session.
+    if (loginBtn.disabled) return;
+    loginBtn.disabled = true;
+    const originalBtnText = loginBtn.textContent;
 
     try {
       let user;
@@ -17114,10 +17247,19 @@ async function renderLoginScreen(container, onLogin, mode = 'login') {
         user = await supabaseSignIn(username, password);
         await setCurrentUser(user);
         await localDB.put('settings', { id: 'session', loggedIn: true, userId: user.id, loggedInAt: new Date().toISOString(), backend: 'supabase' }, { noSync: true });
+        // Pull this account's real data down BEFORE the dashboard ever renders — critical on a
+        // brand-new device, where local storage starts completely empty. Skipping this (as the
+        // code previously did) meant the very first screen after logging in on a new device was
+        // a fully empty Dashboard, which looks exactly like the app being broken rather than
+        // "your data just hasn't arrived yet." Errors are logged, not fatal to login — a slow or
+        // failed initial pull will still get caught up moments later by the periodic sync in
+        // initSyncListeners(), now that that path also triggers a re-render (see below).
+        loginBtn.textContent = 'Fetching your data…';
+        await pullAllFromSupabase().catch((e) => console.warn('Initial Supabase pull failed:', e.message));
       } else if (showSignUp) {
         const name = container.querySelector('#signup-name').value.trim();
-        if (!name) { showError('Enter your name.'); return; }
-        if (password.length < 6) { showError('Password must be at least 6 characters.'); return; }
+        if (!name) { showError('Enter your name.'); loginBtn.disabled = false; loginBtn.textContent = originalBtnText; return; }
+        if (password.length < 6) { showError('Password must be at least 6 characters.'); loginBtn.disabled = false; loginBtn.textContent = originalBtnText; return; }
         const fbUser = await firebaseSignUp(username, password, { name, role: 'Viewer' });
         user = { id: fbUser.uid, name, role: 'Viewer' };
         await setCurrentUser(user);
@@ -17130,11 +17272,15 @@ async function renderLoginScreen(container, onLogin, mode = 'login') {
         await localDB.put('settings', { id: 'session', loggedIn: true, userId: user.id, loggedInAt: new Date().toISOString(), firebaseUid: fbUser.uid, backend: 'firebase' }, { noSync: true });
       } else {
         showError('No login backend is configured — see Settings → Backup to set up Supabase, Google Sheets, or Firebase.');
+        loginBtn.disabled = false;
+        loginBtn.textContent = originalBtnText;
         return;
       }
       onLogin(user);
     } catch (err) {
       showError(err.message || 'Something went wrong — check your details and try again.');
+      loginBtn.disabled = false;
+      loginBtn.textContent = originalBtnText;
     }
   };
 
@@ -17312,8 +17458,8 @@ async function renderReport(container, reportKey, param) {
     balanceSheet: (el) => renderBalanceSheet(el, d?.to),
     cashFlow: renderCashFlowStatement,
     generalLedger: (el) => renderGeneralLedgerPicker(el, param),
-    salesRegister: renderSalesRegister,
-    purchaseRegister: renderPurchaseRegister,
+    salesRegister: (el) => renderSalesRegister(el, d ? { from: d.from, to: d.to } : {}),
+    purchaseRegister: (el) => renderPurchaseRegister(el, d ? { from: d.from, to: d.to } : {}),
     receiptRegister: renderReceiptRegister,
     paymentRegister: renderPaymentRegister,
     journalRegister: renderJournalRegister,
@@ -17327,9 +17473,6 @@ async function renderReport(container, reportKey, param) {
     payables: renderPayables,
     receivablesMapped: renderReceivablesMapped,
     payablesMapped: renderPayablesMapped,
-    salesRegisterMapped: renderSalesRegisterMapped,
-    purchaseRegisterMapped: renderPurchaseRegisterMapped,
-    cashBankMapped: renderCashBankMapped,
     advances: renderAdvances,
     payrollRegister: renderPayrollRegister,
     statementSelector: renderStatementSelector,
@@ -17782,24 +17925,70 @@ async function renderGeneralLedgerPicker(container, preselectLedgerId) {
   if (preselectLedgerId) loadLedger(preselectLedgerId);
 }
 
+/** Groups journalLines by refId (the source-document link every invoice/purchase posts with)
+ *  and classifies each group's lines into taxable value / tax / grand total using the actual
+ *  system tax ledger, rather than trusting a separately-stored copy of those same figures. This
+ *  is what makes the Sales/Purchase Registers below single-sourced: their numbers are read
+ *  straight from the same journalLines that Trial Balance and the Dashboard read, so there is no
+ *  way for them to disagree — unlike the old dual invoice-table/ledger-mapping design. */
+async function ledgerFiguresByRefId(voucherType, taxLedgerId, discountLedgerId) {
+  const lines = await localDB.getAll('journalLines');
+  const relevant = lines.filter((l) => l.voucherType === voucherType && l.refId);
+  const byRef = new Map();
+  relevant.forEach((l) => {
+    const agg = byRef.get(l.refId) || { debitSum: 0, tax: 0, discount: 0 };
+    agg.debitSum += l.debit || 0; // always equal to sum(credit) too, by double-entry construction
+    if (l.ledgerId === taxLedgerId) agg.tax += (l.credit || l.debit || 0);
+    // The discount ledger sits on the DEBIT side for a sale (see postInvoiceToLedger) but the
+    // CREDIT side for a purchase (see postPurchaseToLedger) — either way it's extra value added
+    // to whichever side it's on, so debitSum ends up counting it once no matter which side, and
+    // subtracting it below recovers the true grand total in both cases.
+    if (discountLedgerId && l.ledgerId === discountLedgerId) agg.discount += (l.debit || l.credit || 0);
+    byRef.set(l.refId, agg);
+  });
+  const result = new Map();
+  byRef.forEach((agg, refId) => {
+    const total = round2(agg.debitSum - agg.discount); // exactly matches inv.grandTotal / p.grandTotal
+    const tax = round2(agg.tax);
+    result.set(refId, { taxable: round2(total - tax), tax, total });
+  });
+  return result;
+}
+
 async function renderSalesRegister(container, filters = {}) {
-  const [allInvoices, costCentres, salesmen, jobs] = await Promise.all([
-    localDB.getAll('invoices'), localDB.getAll('costCentres'), localDB.getAll('salesmen'), localDB.getAll('jobs')
+  const [allInvoices, costCentres, salesmen, jobs, outputTax, salesDiscount] = await Promise.all([
+    localDB.getAll('invoices'), localDB.getAll('costCentres'), localDB.getAll('salesmen'), localDB.getAll('jobs'),
+    systemLedger('outputTax'), systemLedger('salesDiscount')
   ]);
+  const ledgerFigures = await ledgerFiguresByRefId('SalesInvoice', outputTax?.id, salesDiscount?.id);
   let invoices = allInvoices.filter((i) => i.status !== 'Draft');
   invoices = applyFilters(invoices, filters);
   invoices.sort((a, b) => b.date.localeCompare(a.date));
 
-  const totalSales = invoices.reduce((s, i) => s + i.grandTotal, 0);
-  const totalTax = invoices.reduce((s, i) => s + i.taxTotal, 0);
-  const totalReceived = invoices.reduce((s, i) => s + i.amountReceived, 0);
-  const totalOutstanding = totalSales - totalReceived;
+  // Every row's Taxable/Tax/Grand Total comes from ledgerFigures (the actual posting) when
+  // available, falling back to the invoice's own stored fields only for the rare case of an
+  // invoice predating this lookup or one that failed to post — so nothing silently shows as
+  // zero, but the ledger is always preferred when it exists.
+  const rows = invoices.map((i) => {
+    const lf = ledgerFigures.get(i.id);
+    return {
+      ...i,
+      taxableValue: lf ? lf.taxable : i.subtotal,
+      taxAmount: lf ? lf.tax : i.taxTotal,
+      grandTotalLedger: lf ? lf.total : i.grandTotal
+    };
+  });
+
+  const totalSales = round2(sum(rows.map((r) => r.grandTotalLedger)));
+  const totalTax = round2(sum(rows.map((r) => r.taxAmount)));
+  const totalReceived = round2(sum(rows.map((r) => r.amountReceived)));
+  const totalOutstanding = round2(totalSales - totalReceived);
 
   container.innerHTML = `
-    ${await reportHeader('Sales Register', `${invoices.length} invoices`, '📋')}
+    ${await reportHeader('Sales Register', `${rows.length} invoices — figures read directly from posted ledger entries`, '📋')}
     <div class="no-print" style="margin-bottom:12px;display:flex;gap:8px"><button class="btn btn-teal" id="csv-download">⬇ CSV</button><button class="btn btn-navy" id="xlsx-download">📊 Excel</button></div>
     ${reportKpis([
-      { label: 'Total Sales', value: totalSales, color: 'teal', icon: '💰' },
+      { label: 'Total Sales (incl. tax)', value: totalSales, color: 'teal', icon: '💰' },
       { label: 'Total Tax', value: totalTax, color: 'blue', icon: '🧾' },
       { label: 'Received', value: totalReceived, color: 'purple', icon: '✅' },
       { label: 'Outstanding', value: totalOutstanding, color: totalOutstanding > 0 ? 'amber' : 'teal', icon: '⏳' }
@@ -17808,11 +17997,11 @@ async function renderSalesRegister(container, filters = {}) {
       <table class="data-table">
         <thead><tr><th>Invoice #</th><th>Date</th><th>Customer</th><th class="num">Taxable Value</th><th class="num">Tax</th><th class="num">Grand Total</th><th class="num">Received</th><th class="num">Balance</th></tr></thead>
         <tbody>
-          ${invoices.map((i) => `<tr class="clickable-row" data-route-link="sales-invoice/${i.id}">
-            <td>${i.invoiceNo}</td><td>${fmtDate(i.date)}</td><td>${i.customerName}</td>
-            <td class="num">${fmtMoney(i.subtotal)}</td><td class="num">${fmtMoney(i.taxTotal)}</td>
-            <td class="num">${fmtMoney(i.grandTotal)}</td><td class="num">${fmtMoney(i.amountReceived)}</td>
-            <td class="num">${fmtMoney(i.grandTotal - i.amountReceived)}</td></tr>`).join('') || '<tr><td colspan="8"><div class="empty-state">No invoices match these filters.</div></td></tr>'}
+          ${rows.map((r) => `<tr class="clickable-row" data-route-link="sales-invoice/${r.id}">
+            <td>${r.invoiceNo}</td><td>${fmtDate(r.date)}</td><td>${r.customerName}</td>
+            <td class="num">${fmtMoney(r.taxableValue)}</td><td class="num">${fmtMoney(r.taxAmount)}</td>
+            <td class="num">${fmtMoney(r.grandTotalLedger)}</td><td class="num">${fmtMoney(r.amountReceived)}</td>
+            <td class="num">${fmtMoney(r.grandTotalLedger - r.amountReceived)}</td></tr>`).join('') || '<tr><td colspan="8"><div class="empty-state">No invoices match these filters.</div></td></tr>'}
         </tbody>
         <tfoot><tr style="font-weight:700"><td colspan="5">Total</td><td class="num">${fmtMoney(totalSales)}</td><td colspan="2"></td></tr></tfoot>
       </table>
@@ -17820,11 +18009,11 @@ async function renderSalesRegister(container, filters = {}) {
 
   container.querySelector('#csv-download').addEventListener('click', () => {
     downloadCsv('sales-register', ['Invoice #', 'Date', 'Customer', 'Taxable Value', 'Tax', 'Grand Total', 'Received', 'Balance'],
-      invoices.map((i) => [i.invoiceNo, i.date, i.customerName, i.subtotal, i.taxTotal, i.grandTotal, i.amountReceived, i.grandTotal - i.amountReceived]));
+      rows.map((r) => [r.invoiceNo, r.date, r.customerName, r.taxableValue, r.taxAmount, r.grandTotalLedger, r.amountReceived, r.grandTotalLedger - r.amountReceived]));
   });
   container.querySelector('#xlsx-download').addEventListener('click', () => {
     downloadExcel('sales-register', ['Invoice #', 'Date', 'Customer', 'Taxable Value', 'Tax', 'Grand Total', 'Received', 'Balance'],
-      invoices.map((i) => [i.invoiceNo, i.date, i.customerName, i.subtotal, i.taxTotal, i.grandTotal, i.amountReceived, i.grandTotal - i.amountReceived]));
+      rows.map((r) => [r.invoiceNo, r.date, r.customerName, r.taxableValue, r.taxAmount, r.grandTotalLedger, r.amountReceived, r.grandTotalLedger - r.amountReceived]));
   });
   renderFilterBar(container, { ...filters, costCentres, salesmen, jobs, showJob: true }, (f) => renderSalesRegister(container, f));
   bindDeepLinks(container);
@@ -17900,21 +18089,34 @@ async function renderReceivables(container) {
 }
 
 async function renderPurchaseRegister(container, filters = {}) {
-  const [allPurchases, costCentres] = await Promise.all([localDB.getAll('purchases'), localDB.getAll('costCentres')]);
+  const [allPurchases, costCentres, inputTax, purchaseDiscount] = await Promise.all([
+    localDB.getAll('purchases'), localDB.getAll('costCentres'), systemLedger('inputTax'), systemLedger('purchaseDiscount')
+  ]);
+  const ledgerFigures = await ledgerFiguresByRefId('Purchase', inputTax?.id, purchaseDiscount?.id);
   let purchases = allPurchases.filter((p) => p.status !== 'Draft');
   purchases = applyFilters(purchases, filters);
   purchases.sort((a, b) => b.date.localeCompare(a.date));
 
-  const total = purchases.reduce((s, p) => s + p.grandTotal, 0);
-  const totalTax = purchases.reduce((s, p) => s + p.taxTotal, 0);
-  const totalPaid = purchases.reduce((s, p) => s + p.amountPaid, 0);
-  const returnsCount = purchases.filter((p) => p.isReturn).length;
+  const rows = purchases.map((p) => {
+    const lf = ledgerFigures.get(p.id);
+    return {
+      ...p,
+      taxableValue: lf ? lf.taxable : p.subtotal,
+      taxAmount: lf ? lf.tax : p.taxTotal,
+      grandTotalLedger: lf ? lf.total : p.grandTotal
+    };
+  });
+
+  const total = round2(sum(rows.map((r) => r.grandTotalLedger)));
+  const totalTax = round2(sum(rows.map((r) => r.taxAmount)));
+  const totalPaid = round2(sum(rows.map((r) => r.amountPaid)));
+  const returnsCount = rows.filter((r) => r.isReturn).length;
 
   container.innerHTML = `
-    ${await reportHeader('Purchase Register', `${purchases.length} bills`, '📥')}
+    ${await reportHeader('Purchase Register', `${rows.length} bills — figures read directly from posted ledger entries`, '📥')}
     <div class="no-print" style="margin-bottom:12px;display:flex;gap:8px"><button class="btn btn-teal" id="csv-download">⬇ CSV</button><button class="btn btn-navy" id="xlsx-download">📊 Excel</button></div>
     ${reportKpis([
-      { label: 'Total Purchases', value: total, color: 'blue', icon: '📦' },
+      { label: 'Total Purchases (incl. tax)', value: total, color: 'blue', icon: '📦' },
       { label: 'Total Tax', value: totalTax, color: 'purple', icon: '🧾' },
       { label: 'Paid', value: totalPaid, color: 'teal', icon: '✅' },
       { label: 'Purchase Returns', value: returnsCount, color: 'red', icon: '↩️', isCount: true }
@@ -17923,23 +18125,23 @@ async function renderPurchaseRegister(container, filters = {}) {
       <table class="data-table">
         <thead><tr><th>Bill #</th><th>Date</th><th>Supplier</th><th>Type</th><th class="num">Taxable Value</th><th class="num">Tax</th><th class="num">Grand Total</th><th class="num">Paid</th><th class="num">Balance</th></tr></thead>
         <tbody>
-          ${purchases.map((p) => `<tr class="clickable-row" data-route-link="purchase/${p.id}">
-            <td>${p.billNo}</td><td>${fmtDate(p.date)}</td><td>${p.supplierName}</td>
-            <td>${p.isReturn ? '<span class="badge badge-red">↩️ Return</span>' : '📄 Bill'}</td>
-            <td class="num">${fmtMoney(p.subtotal)}</td><td class="num">${fmtMoney(p.taxTotal)}</td>
-            <td class="num">${fmtMoney(p.grandTotal)}</td><td class="num">${fmtMoney(p.amountPaid)}</td>
-            <td class="num">${fmtMoney(p.grandTotal - p.amountPaid)}</td></tr>`).join('') || '<tr><td colspan="9"><div class="empty-state">No bills match these filters.</div></td></tr>'}
+          ${rows.map((r) => `<tr class="clickable-row" data-route-link="purchase/${r.id}">
+            <td>${r.billNo}</td><td>${fmtDate(r.date)}</td><td>${r.supplierName}</td>
+            <td>${r.isReturn ? '<span class="badge badge-red">↩️ Return</span>' : '📄 Bill'}</td>
+            <td class="num">${fmtMoney(r.taxableValue)}</td><td class="num">${fmtMoney(r.taxAmount)}</td>
+            <td class="num">${fmtMoney(r.grandTotalLedger)}</td><td class="num">${fmtMoney(r.amountPaid)}</td>
+            <td class="num">${fmtMoney(r.grandTotalLedger - r.amountPaid)}</td></tr>`).join('') || '<tr><td colspan="9"><div class="empty-state">No bills match these filters.</div></td></tr>'}
         </tbody>
         <tfoot><tr style="font-weight:700"><td colspan="6">Total</td><td class="num">${fmtMoney(total)}</td><td colspan="2"></td></tr></tfoot>
       </table>
     </div>`;
   container.querySelector('#csv-download').addEventListener('click', () => {
     downloadCsv('purchase-register', ['Bill #', 'Date', 'Supplier', 'Type', 'Taxable Value', 'Tax', 'Grand Total', 'Paid', 'Balance'],
-      purchases.map((p) => [p.billNo, p.date, p.supplierName, p.isReturn ? 'Return' : 'Bill', p.subtotal, p.taxTotal, p.grandTotal, p.amountPaid, p.grandTotal - p.amountPaid]));
+      rows.map((r) => [r.billNo, r.date, r.supplierName, r.isReturn ? 'Return' : 'Bill', r.taxableValue, r.taxAmount, r.grandTotalLedger, r.amountPaid, r.grandTotalLedger - r.amountPaid]));
   });
   container.querySelector('#xlsx-download').addEventListener('click', () => {
     downloadExcel('purchase-register', ['Bill #', 'Date', 'Supplier', 'Type', 'Taxable Value', 'Tax', 'Grand Total', 'Paid', 'Balance'],
-      purchases.map((p) => [p.billNo, p.date, p.supplierName, p.isReturn ? 'Return' : 'Bill', p.subtotal, p.taxTotal, p.grandTotal, p.amountPaid, p.grandTotal - p.amountPaid]));
+      rows.map((r) => [r.billNo, r.date, r.supplierName, r.isReturn ? 'Return' : 'Bill', r.taxableValue, r.taxAmount, r.grandTotalLedger, r.amountPaid, r.grandTotalLedger - r.amountPaid]));
   });
 
   renderFilterBar(container, { ...filters, costCentres, showSalesman: false }, (f) => renderPurchaseRegister(container, f));
@@ -18443,99 +18645,6 @@ async function renderPayablesMapped(container, selectedGroup) {
     btn.addEventListener('click', () => renderPayablesMapped(container, btn.dataset.group || null));
   });
 }
-
-/** Generic mapped register — used by Sales Register (Mapped), Purchase Register (Mapped), and
- *  Cash/Bank Report (Mapped). Groups the mapped Voucher Register lines back up to one row per
- *  voucher (Date, Voucher Ref, Voucher Type, mapped Debit/Credit, Narration) — the register-level
- *  view of the same mapping the Voucher Register shows at line level, per §7/§8/§10/§11: any
- *  register can be sourced from the Voucher Register through Ledger/Group + Voucher Type mapping. */
-async function renderMappedRegister(container, reportKey, title, icon, initialFrom, initialTo) {
-  const periodKey = reportKey + 'Period', fromKey = reportKey + 'From', toKey = reportKey + 'To';
-  if (initialFrom !== undefined) { container.dataset[periodKey] = 'Custom'; container.dataset[fromKey] = initialFrom || ''; container.dataset[toKey] = initialTo || ''; }
-  const period = container.dataset[periodKey] || 'All Time';
-  const { from, to } = periodRange(period, container.dataset[fromKey], container.dataset[toKey]);
-  const mapping = await getReportMapping(reportKey);
-  const [lines, journals, allLines, ledgers] = await Promise.all([
-    getMappedVoucherLines(mapping, { from, to }), localDB.getAll('journals'), localDB.getAll('journalLines'), localDB.getAll('ledgers')
-  ]);
-  const journalById = new Map(journals.map((j) => [j.id, j]));
-  const ledgerById = new Map(ledgers.map((l) => [l.id, l]));
-  const linesByJournal = new Map();
-  allLines.forEach((l) => { if (!linesByJournal.has(l.journalId)) linesByJournal.set(l.journalId, []); linesByJournal.get(l.journalId).push(l); });
-  const mappedLedgerIds = new Set(lines.map((l) => l.ledgerId));
-
-  const byVoucher = new Map();
-  lines.forEach((l) => {
-    const agg = byVoucher.get(l.journalId) || { debit: 0, credit: 0, journalId: l.journalId };
-    agg.debit += l.debit; agg.credit += l.credit;
-    byVoucher.set(l.journalId, agg);
-  });
-  const rows = [...byVoucher.values()]
-    .map((v) => ({ ...v, journal: journalById.get(v.journalId) }))
-    .filter((v) => v.journal)
-    .map((v) => {
-      // The "party" side of this voucher — whichever line(s) in the SAME journal fall outside
-      // the mapped ledger set, e.g. the Customer's own ledger on a Sales voucher — so the
-      // register shows WHO the transaction was with, not just a bare voucher reference with no
-      // way to tell which customer/supplier/ledger it actually involved.
-      const otherLines = (linesByJournal.get(v.journalId) || []).filter((l) => !mappedLedgerIds.has(l.ledgerId));
-      const partyNames = [...new Set(otherLines.map((l) => ledgerById.get(l.ledgerId)?.name).filter(Boolean))];
-      return {
-        journalId: v.journalId, date: v.journal.date, voucherNo: v.journal.voucherNo || '—',
-        voucherType: toStandardVoucherType(v.journal.voucherType), narration: v.journal.narration || '',
-        party: partyNames.join(', ') || '—',
-        debit: round2(v.debit), credit: round2(v.credit)
-      };
-    })
-    .sort((a, b) => b.date.localeCompare(a.date));
-
-  const totalDebit = round2(sum(rows.map((r) => r.debit)));
-  const totalCredit = round2(sum(rows.map((r) => r.credit)));
-
-  container.innerHTML = `
-    ${await reportHeader(title, `${fmtDate(from)} – ${fmtDate(to)} · ${rows.length} voucher${rows.length === 1 ? '' : 's'} matching the current mapping`, icon)}
-    <div class="no-print" style="margin-bottom:12px;display:flex;gap:8px">
-      <button class="btn btn-ghost btn-sm" id="mr-mapping-btn">⚙ Mapping</button>
-      <button class="btn btn-teal btn-sm" id="csv-download">⬇ CSV</button>
-      <button class="btn btn-navy btn-sm" id="xlsx-download">📊 Excel</button>
-    </div>
-    ${quickDateFilterBar(period, container.dataset[fromKey], container.dataset[toKey])}
-    ${reportKpis([
-      { label: 'Mapped Debit', value: totalDebit, color: 'teal', icon: '⬆' },
-      { label: 'Mapped Credit', value: totalCredit, color: 'blue', icon: '⬇' }
-    ])}
-    <div class="card">
-      <table class="data-table">
-        <thead><tr><th>Date</th><th>Voucher Ref</th><th>Voucher Type</th><th>Party / Ledger</th><th class="num">Debit</th><th class="num">Credit</th><th>Narration</th></tr></thead>
-        <tbody>
-          ${rows.map((r) => `<tr><td>${fmtDate(r.date)}</td><td>${r.voucherNo}</td><td><span class="badge badge-slate">${r.voucherType}</span></td><td>${r.party}</td><td class="num">${r.debit ? fmtMoney(r.debit) : ''}</td><td class="num">${r.credit ? fmtMoney(r.credit) : ''}</td><td>${r.narration}</td></tr>`).join('') || '<tr><td colspan="7"><div class="empty-state">No vouchers match the current mapping/period — try widening the date range, or check ⚙ Mapping.</div></td></tr>'}
-        </tbody>
-        <tfoot><tr style="font-weight:700"><td colspan="4">Total</td><td class="num">${fmtMoney(totalDebit)}</td><td class="num">${fmtMoney(totalCredit)}</td><td></td></tr></tfoot>
-      </table>
-    </div>
-    <div id="mr-mapping-root"></div>`;
-  bindQuickDateFilterBar(container, (p, f, t) => {
-    container.dataset[periodKey] = p;
-    if (p === 'Custom') { container.dataset[fromKey] = f; container.dataset[toKey] = t; }
-    renderMappedRegister(container, reportKey, title, icon);
-  });
-  container.querySelector('#csv-download').addEventListener('click', () => {
-    downloadCsv(reportKey, ['Date', 'Voucher Ref', 'Voucher Type', 'Party/Ledger', 'Debit', 'Credit', 'Narration'],
-      rows.map((r) => [r.date, r.voucherNo, r.voucherType, r.party, r.debit, r.credit, r.narration]));
-  });
-  container.querySelector('#xlsx-download').addEventListener('click', () => {
-    downloadExcel(reportKey, ['Date', 'Voucher Ref', 'Voucher Type', 'Party/Ledger', 'Debit', 'Credit', 'Narration'],
-      rows.map((r) => [r.date, r.voucherNo, r.voucherType, r.party, r.debit, r.credit, r.narration]));
-  });
-  container.querySelector('#mr-mapping-btn').addEventListener('click', () => {
-    openMappingEditorModal(container.querySelector('#mr-mapping-root'), reportKey, () => renderMappedRegister(container, reportKey, title, icon));
-  });
-  bindDeepLinks(container);
-}
-
-async function renderSalesRegisterMapped(container, param) { const d = parseDateParam(param); return renderMappedRegister(container, 'salesRegisterMapped', 'Sales Register (Mapped)', '📋', d?.from, d?.to); }
-async function renderPurchaseRegisterMapped(container, param) { const d = parseDateParam(param); return renderMappedRegister(container, 'purchaseRegisterMapped', 'Purchase Register (Mapped)', '📋', d?.from, d?.to); }
-async function renderCashBankMapped(container, param) { const d = parseDateParam(param); return renderMappedRegister(container, 'cashBankMapped', 'Cash / Bank Report (Mapped)', '💵', d?.from, d?.to); }
 
 async function renderRatioAnalysis(container) {
   const tb = await trialBalance({});
@@ -19063,10 +19172,7 @@ const NAV = [
     { key: 'report-cash-book', label: 'Cash Book', icon: '💵' },
     { key: 'cash-book', label: 'Petty Cash Book', icon: '👛' },
     { key: 'report-bank-book', label: 'Bank Book', icon: '🏦' },
-    { key: 'report-voucher-register', label: 'Voucher Register', icon: '🗂️' },
-    { key: 'report-sales-register-mapped', label: 'Sales Register (Mapped)', icon: '🗺️' },
-    { key: 'report-purchase-register-mapped', label: 'Purchase Register (Mapped)', icon: '🗺️' },
-    { key: 'report-cash-bank-mapped', label: 'Cash / Bank Report (Mapped)', icon: '🗺️' }
+    { key: 'report-voucher-register', label: 'Voucher Register', icon: '🗂️' }
   ]},
   { group: 'Analysis', items: [
     { key: 'report-gl', label: 'General Ledger', icon: '📚' },
@@ -19127,13 +19233,10 @@ const ROUTES = {
   'report-day-book': (el) => renderReport(el, 'dayBook'),
   'cash-book': (el) => renderCashBook(el),
   'report-voucher-register': (el) => renderReport(el, 'voucherRegister'),
-  'report-sales-register-mapped': (el, param) => renderReport(el, 'salesRegisterMapped', param),
-  'report-purchase-register-mapped': (el, param) => renderReport(el, 'purchaseRegisterMapped', param),
-  'report-cash-bank-mapped': (el, param) => renderReport(el, 'cashBankMapped', param),
   'report-cash-book': (el) => renderReport(el, 'cashBook'),
   'report-bank-book': (el) => renderReport(el, 'bankBook'),
-  'report-sales-register': (el) => renderReport(el, 'salesRegister'),
-  'report-purchase-register': (el) => renderReport(el, 'purchaseRegister'),
+  'report-sales-register': (el, param) => renderReport(el, 'salesRegister', param),
+  'report-purchase-register': (el, param) => renderReport(el, 'purchaseRegister', param),
   'report-receipt-register': (el) => renderReport(el, 'receiptRegister'),
   'report-payment-register': (el) => renderReport(el, 'paymentRegister'),
   'report-journal-register': (el) => renderReport(el, 'journalRegister'),
@@ -19387,6 +19490,65 @@ function showFileProtocolSyncWarning() {
   banner.querySelector('#file-protocol-dismiss').addEventListener('click', () => banner.remove());
 }
 
+/** Detects the app running inside an in-app browser (WhatsApp, Instagram, Facebook Messenger,
+ *  Telegram, TikTok, Snapchat, LinkedIn — identified by their known user-agent signatures) rather
+ *  than a real, standalone browser. This isn't just "no install button" — these embedded
+ *  WebViews are a genuinely different, more restricted browser engine than the phone's real
+ *  Chrome/Safari, and are a well-documented source of unreliable localStorage/IndexedDB
+ *  behavior — very likely the real explanation behind intermittent login/"no data" reports for
+ *  anyone opening this app via a shared link rather than a real browser tab, not just the
+ *  missing install option. Takes priority over the iOS install banner (shown instead of it, not
+ *  alongside) since this is the more consequential problem — install is cosmetic, unreliable
+ *  data storage is not. */
+function maybeShowInAppBrowserBanner() {
+  const ua = navigator.userAgent || '';
+  const signatures = [
+    { test: /FBAN|FBAV|FB_IAB/i, name: 'Facebook' },
+    { test: /Instagram/i, name: 'Instagram' },
+    { test: /Line\//i, name: 'LINE' },
+    { test: /Twitter/i, name: 'Twitter/X' },
+    { test: /LinkedInApp/i, name: 'LinkedIn' },
+    { test: /Snapchat/i, name: 'Snapchat' },
+    { test: /TikTok|musical_ly/i, name: 'TikTok' },
+    { test: /WhatsApp/i, name: 'WhatsApp' },
+    { test: /Telegram/i, name: 'Telegram' }
+  ];
+  const match = signatures.find((s) => s.test.test(ua));
+  if (!match) return false;
+  if (document.getElementById('inapp-browser-banner')) return true;
+  const banner = document.createElement('div');
+  banner.id = 'inapp-browser-banner';
+  banner.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:10000;background:#B23B3B;color:#fff;padding:12px 16px;font-size:13px;text-align:center;line-height:1.5';
+  banner.innerHTML = `⚠️ You're viewing this inside ${match.name}'s built-in browser, not a real browser — this can cause login problems, missing data, and blocks installing the app entirely. Tap the <b>⋮ or ••• menu</b> in ${match.name} and choose <b>"Open in Browser"</b> / <b>"Open in Chrome"</b> / <b>"Open in Safari"</b> to fix this properly.`;
+  document.body.prepend(banner);
+  return true;
+}
+
+/** Detects iOS Safari/Chrome/etc. specifically (every iOS browser uses WebKit and shares this
+ *  limitation — it's an Apple platform decision, not a per-browser bug) and shown a one-time
+ *  banner with the actual manual steps, since there is no automatic "Install app" prompt or menu
+ *  option on iOS at all, ever, for any website — the standard install-prompt API this app (and
+ *  every other PWA) relies on for Android/desktop Chrome was never implemented by Apple. Without
+ *  this banner, an iPhone user has no way to discover that installing is even possible. */
+function maybeShowIosInstallBanner() {
+  if (maybeShowInAppBrowserBanner()) return; // the in-app-browser warning takes priority — no point telling someone stuck in an embedded WebView how to install when they can't yet, until they escape it
+  const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.navigator.standalone;
+  if (!isIos) return;
+  if (localStorage.getItem('eknomix-ios-install-dismissed') === '1') return;
+  if (document.getElementById('ios-install-banner')) return;
+  const banner = document.createElement('div');
+  banner.id = 'ios-install-banner';
+  banner.style.cssText = 'position:fixed;left:12px;right:12px;bottom:12px;z-index:9999;background:#13233F;color:#fff;padding:12px 16px;border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,0.3);font-size:13px;display:flex;align-items:center;gap:10px';
+  banner.innerHTML = `
+    <span style="flex:1">📲 Install this app: tap <b>Share</b> (⬆️ at the bottom), then <b>"Add to Home Screen"</b>. iPhone doesn't offer an automatic install button — this is the only way, for any website.</span>
+    <button id="ios-install-dismiss" style="background:transparent;border:1px solid rgba(255,255,255,0.4);color:#fff;border-radius:6px;padding:4px 10px;cursor:pointer;white-space:nowrap">Got it</button>`;
+  document.body.appendChild(banner);
+  document.getElementById('ios-install-dismiss').addEventListener('click', () => {
+    localStorage.setItem('eknomix-ios-install-dismissed', '1');
+    banner.remove();
+  });
+}
+
 async function boot() {
   window.addEventListener('eknomix-storage-fallback', showStorageFallbackBanner);
   if (location.protocol === 'file:' && isSupabaseConfigured()) showFileProtocolSyncWarning();
@@ -19412,7 +19574,7 @@ async function boot() {
         document.body.prepend(banner);
       }, { once: true });
     } else if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('./service-worker.js').catch((e) => console.warn('SW registration failed', e));
+      navigator.serviceWorker.register('./service-worker.js', { updateViaCache: 'none' }).catch((e) => console.warn('SW registration failed', e));
     }
   }
 
@@ -19430,6 +19592,7 @@ async function boot() {
     if (!(await isLoggedIn())) {
       await renderLoginScreen(document.getElementById('app'), () => boot());
       window.dispatchEvent(new CustomEvent('eknomix-app-ready')); // login screen counts as "loaded", not stuck
+      maybeShowIosInstallBanner();
       return;
     }
 
@@ -19441,6 +19604,7 @@ async function boot() {
 
     buildShell(currentUser, company);
     window.dispatchEvent(new CustomEvent('eknomix-app-ready'));
+    maybeShowIosInstallBanner();
     if (localDB.storageBackend() === 'memory') showStorageFallbackBanner();
     router();
 
