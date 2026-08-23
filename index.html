@@ -315,7 +315,12 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 tr.clickable-row:hover { background: var(--accent-tint) !important; }
 .card.clickable-row:hover { transform: translateY(-2px); box-shadow: var(--shadow-2); }
 .link-deep { color: var(--accent-dark); font-weight: 600; text-decoration: none; cursor: pointer; }
-.link-deep:hover { text-decoration: underline; }
+/* Scoped to real hover-capable devices only (mouse/trackpad) — on a touchscreen, tapping a link
+   triggers :hover with no mouse movement afterward to ever clear it, so the underline below could
+   visually "stick" under the text well after the tap, looking like a stray line crossing it. */
+@media (hover: hover) {
+  .link-deep:hover { text-decoration: underline; }
+}
 
 /* ---------------------------- Demo data cards ---------------------------- */
 .demo-card { border-width: 1px; }
@@ -606,8 +611,16 @@ tr.is-cancelled td { color: var(--red); background: var(--red-tint); }
   .topbar { padding: 0 12px; gap: 8px; }
   .topbar .brand-mini { display: flex; align-items: center; gap: 8px; font-weight: 700; }
   .topbar .search { display: none; }
-  .topbar-right { gap: 8px; }
-  .user-chip span.badge { display: none; }
+  .topbar-right { gap: 6px; }
+  /* The user's name/role text and the sync-status label are the least essential parts of the
+     topbar on a narrow screen — collapsing them to icon-only is what guarantees Logout (the
+     control actually being pushed off-screen) always has room and stays reachable, instead of
+     being the element silently squeezed past the visible edge. */
+  .user-chip { gap: 0; padding: 4px; }
+  .user-chip > :not(.avatar) { display: none; }
+  #sync-status { display: none; }
+  #logout-btn { flex-shrink: 0; }
+  #logout-btn .logout-label { display: none; }
   .main { padding: 16px; }
   [style*="display:flex"] { flex-wrap: wrap; }
   [style*="display: flex"] { flex-wrap: wrap; }
@@ -4053,6 +4066,10 @@ async function renderSalesInvoiceList(container) {
   const totalOutstanding = round2(sum(allInvoices.filter((i) => i.status !== 'Draft').map((i) => (i.grandTotal || 0) - (i.amountReceived || 0))));
   const totalPaidAmount = round2(sum(allInvoices.map((i) => i.amountReceived || 0)));
 
+  const [costCentres, salesmen] = await Promise.all([localDB.getAll('costCentres'), localDB.getAll('salesmen')]);
+  const ccName = new Map(costCentres.map((c) => [c.id, c.name]));
+  const smName = new Map(salesmen.map((s) => [s.id, s.name]));
+
   container.innerHTML = `
     <div class="page-header">
       <div>
@@ -4086,9 +4103,9 @@ async function renderSalesInvoiceList(container) {
     </div>
     <div class="card" style="padding:0;overflow:hidden">
       <table class="data-table invoice-table">
-        <thead><tr><th>Invoice #</th><th>Date</th><th>Customer</th><th class="num">Grand Total</th><th class="num">Balance</th><th>Status</th><th style="width:130px"></th></tr></thead>
+        <thead><tr><th>Invoice #</th><th>Date</th><th>Customer</th><th>Cost Centre</th><th>Salesman</th><th class="num">Grand Total</th><th class="num">Balance</th><th>Status</th><th style="width:130px"></th></tr></thead>
         <tbody>
-          ${invoices.length ? invoices.map(rowHtml).join('') : `<tr><td colspan="7"><div class="empty-state"><div class="icon">🧾</div>${allInvoices.length ? 'No invoices match your search/filter.' : 'No invoices yet. Create your first one.'}</div></td></tr>`}
+          ${invoices.length ? invoices.map((inv) => rowHtml(inv, ccName, smName)).join('') : `<tr><td colspan="9"><div class="empty-state"><div class="icon">🧾</div>${allInvoices.length ? 'No invoices match your search/filter.' : 'No invoices yet. Create your first one.'}</div></td></tr>`}
         </tbody>
       </table>
     </div>
@@ -4124,16 +4141,24 @@ async function renderSalesInvoiceList(container) {
   bindDeepLinks(container);
 }
 
-function rowHtml(inv) {
+function rowHtml(inv, ccName, smName) {
   const balance = round2((inv.grandTotal || 0) - (inv.amountReceived || 0));
   const isDraft = inv.status === 'Draft';
   const isPaid = !isDraft && balance <= 0.005;
   const isPartial = !isDraft && !isPaid && (inv.amountReceived || 0) > 0;
   const badge = isDraft ? 'badge-slate' : isPaid ? 'badge-green' : isPartial ? 'badge-blue' : 'badge-amber';
   const statusLabel = isDraft ? 'Draft' : isPaid ? 'Paid' : isPartial ? 'Partial' : 'Unpaid';
+  const initial = (inv.customerName || '?').trim().charAt(0).toUpperCase();
   return `<tr class="clickable-row" data-open="${inv.id}">
     <td><span class="mono" style="font-weight:600">${inv.invoiceNo}</span></td><td>${fmtDate(inv.date)}</td>
-    <td><a class="link-deep" data-route-link="customer/${inv.customerId}">${inv.customerName}</a></td>
+    <td>
+      <a class="link-deep" data-route-link="customer/${inv.customerId}" style="display:inline-flex;align-items:center;gap:8px;font-size:13.5px">
+        <span style="width:22px;height:22px;border-radius:50%;background:var(--accent-tint);color:var(--accent-dark);display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">${initial}</span>
+        ${inv.customerName}
+      </a>
+    </td>
+    <td style="color:var(--slate-500);font-size:12px">${ccName?.get(inv.costCentreId) || '—'}</td>
+    <td style="color:var(--slate-500);font-size:12px">${smName?.get(inv.salesmanId) || '—'}</td>
     <td class="num mono">${fmtMoney(inv.grandTotal)}</td>
     <td class="num mono" style="color:${balance > 0.005 ? 'var(--amber)' : 'var(--accent)'};font-weight:${balance > 0.005 ? '600' : '400'}">${fmtMoney(balance)}</td>
     <td><span class="badge ${badge}">${statusLabel}</span></td>
@@ -19456,8 +19481,8 @@ function buildShell(currentUser, company) {
       <div class="search">🔎 <input placeholder="Search invoices, customers, items…" id="global-search" /></div>
       <div class="topbar-right">
         <span class="status-pill" id="sync-status">● Local only</span>
-        <div class="user-chip" data-route="users-roles"><div class="avatar">${initials}</div> ${currentUser?.name || 'Super Admin'} <span class="badge badge-slate" style="margin-left:4px">${role}</span></div>
-        <button class="btn btn-ghost btn-sm" id="logout-btn" title="Log out">🚪 Logout</button>
+        <div class="user-chip" data-route="users-roles"><div class="avatar">${initials}</div> <span class="user-chip-name">${currentUser?.name || 'Super Admin'}</span> <span class="badge badge-slate" style="margin-left:4px">${role}</span></div>
+        <button class="btn btn-ghost btn-sm" id="logout-btn" title="Log out">🚪 <span class="logout-label">Logout</span></button>
       </div>
     </header>
     <main class="main" id="main-view"></main>
