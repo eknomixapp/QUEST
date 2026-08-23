@@ -1929,7 +1929,16 @@ const SUPABASE_SYNC_STORES = ['ledgers', 'ledgerGroups', 'costCentres', 'jobs', 
   'items', 'invoices', 'quotations', 'purchases', 'receipts', 'payments', 'expenses', 'incomes',
   'journals', 'journalLines', 'employees', 'payrollEmployees', 'payslips', 'salaryElements',
   'attendanceRecords', 'appliedAdvances', 'partners', 'appropriations', 'contracts', 'journalDrafts',
-  'letterheadRegister', 'hrTemplates', 'recurringTemplates', 'companies'];
+  'letterheadRegister', 'hrTemplates', 'recurringTemplates', 'companies',
+  // Numbering counters — previously excluded entirely, meaning every device kept a fully
+  // independent local counter with no way to ever converge. On any multi-device setup, two
+  // people creating a document around the same time on different devices could easily be
+  // assigned the exact same number, silently, until the after-the-fact duplicate detector
+  // caught it. Syncing this is the first of two layers fixing that — see nextNumber() below
+  // for the second (an active collision check against real data, which closes the remaining
+  // gap for the rare case of two devices issuing a number in the same moment, before either
+  // has had a chance to sync the other's increment yet).
+  'counters'];
 
 async function supabasePushRecord(storeName, id, payload) {
   const sb = await getSupabaseClient();
@@ -2315,11 +2324,25 @@ async function flushSyncQueue() {
   // flashed "Syncing…" every single time regardless of whether there was actually anything to
   // push. With an empty queue (the common case — most 30-second ticks have nothing new to send)
   // that's a permanent, meaningless blink. Only genuinely-pending work should ever show it.
-  const queue = (await localDB.getAll('syncQueue')).filter((q) => q.status === 'pending');
-  if (!queue.length) {
+  const rawQueue = (await localDB.getAll('syncQueue')).filter((q) => q.status === 'pending');
+  if (!rawQueue.length) {
     emit({ state: 'online', lastSync: new Date().toISOString() });
     return;
   }
+
+  // Collapse multiple pending entries for the same (store, record) down to just the most
+  // recently-queued one, discarding the rest — see the fix note above the function for why this
+  // matters. Each queue entry carries a full record snapshot (not a diff), so "keep only the
+  // latest queuedAt" is always safe and correct, regardless of how many edits piled up.
+  const latestByKey = new Map();
+  rawQueue.forEach((item) => {
+    const key = `${item.store}:${item.docId}`;
+    const prev = latestByKey.get(key);
+    if (!prev || item.queuedAt > prev.queuedAt) latestByKey.set(key, item);
+  });
+  const superseded = rawQueue.filter((item) => latestByKey.get(`${item.store}:${item.docId}`).id !== item.id);
+  for (const item of superseded) await localDB.remove('syncQueue', item.id, { noSync: true });
+  const queue = [...latestByKey.values()];
 
   flushing = true;
   emit({ state: 'syncing' });
@@ -3410,6 +3433,23 @@ async function findDuplicateVoucherNumbers() {
   return results;
 }
 
+/** Maps a voucherType string (as passed into nextNumber) to the {store, field} nextNumber should
+ *  check for an already-existing number — reusing the exact same mapping the Duplicate Number
+ *  Check already relies on, so both stay consistent by construction. Falls back to checking the
+ *  journals store's voucherNo for any voucher type not in this list (Journal, Contra, and any
+ *  other generic voucher type entered through the Journal Entry screen), since those all number
+ *  through the same shared journals store regardless of their specific type. */
+function numberedStoreForVoucherType(voucherType) {
+  const entry = NUMBERED_STORES.find((n) => NAN_NUMBER_TYPE_BY_STORE[n.store] === voucherType);
+  return entry || { store: 'journals', field: 'voucherNo' };
+}
+
+async function isNumberAlreadyUsed(voucherType, number) {
+  const { store, field } = numberedStoreForVoucherType(voucherType);
+  const records = await localDB.getAll(store).catch(() => []);
+  return records.some((r) => r[field] === number);
+}
+
 async function nextNumber(voucherType, opts = {}) {
   const config = await getConfig(voucherType);
   // Uses the TRANSACTION'S OWN date to determine its financial year, not today's system date —
@@ -3419,17 +3459,32 @@ async function nextNumber(voucherType, opts = {}) {
   const effectiveDate = opts.date ? new Date(opts.date) : new Date();
   const fy = config.resetOnFY ? await currentFYLabel(effectiveDate) : 'ALL';
   const counterId = `counter:${voucherType}:${fy}`;
-  const counter = (await localDB.get('counters', counterId)) || { id: counterId, value: config.start - 1 };
+  let counter = (await localDB.get('counters', counterId)) || { id: counterId, value: config.start - 1 };
 
   if (opts.manual && opts.manualNumber) {
     return String(opts.manualNumber);
   }
 
-  counter.value += 1;
-  await localDB.put('counters', counter, { noSync: true });
+  const buildNumber = (value) => {
+    const num = String(value).padStart(config.padding || 4, '0');
+    return `${config.prefix || ''}${fy && config.resetOnFY ? fy + '-' : ''}${num}${config.suffix || ''}`;
+  };
 
-  const num = String(counter.value).padStart(config.padding || 4, '0');
-  return `${config.prefix || ''}${fy && config.resetOnFY ? fy + '-' : ''}${num}${config.suffix || ''}`;
+  // Actively verify the candidate number isn't already in use before handing it out — the
+  // counter alone can't guarantee this across devices that haven't fully synced with each other
+  // yet (see the comment on SUPABASE_SYNC_STORES above). This checks against real, already-synced
+  // data instead of just trusting the local counter, and keeps advancing past any collision found
+  // rather than silently issuing a duplicate. Capped at 50 attempts purely as a safety valve
+  // against an unrelated bug elsewhere causing an infinite loop here — a real business will never
+  // have 50 simultaneous collisions on one counter.
+  let candidate;
+  for (let attempt = 0; attempt < 50; attempt++) {
+    counter.value += 1;
+    candidate = buildNumber(counter.value);
+    if (!(await isNumberAlreadyUsed(voucherType, candidate))) break;
+  }
+  await localDB.put('counters', counter);
+  return candidate;
 }
 
 /** Resets a voucher type's numbering counter back to its configured start value (e.g. back to 1). */
@@ -3437,7 +3492,7 @@ async function resetCounter(voucherType) {
   const config = await getConfig(voucherType);
   const fy = config.resetOnFY ? await currentFYLabel() : 'ALL';
   const counterId = `counter:${voucherType}:${fy}`;
-  await localDB.put('counters', { id: counterId, value: config.start - 1 }, { noSync: true });
+  await localDB.put('counters', { id: counterId, value: config.start - 1 });
 }
 
 /** Shows what the next number would look like right now, without consuming it — for the Settings preview. */
@@ -3721,6 +3776,41 @@ async function migrateDeduplicateSystemLedgers() {
     for (const dupe of group.slice(1)) {
       await localDB.put('ledgers', { ...dupe, system: null, name: dupe.name.includes('(duplicate') ? dupe.name : `${dupe.name} (duplicate system:${key})` }, { noSync: true });
     }
+  }
+}
+
+/** Backfills receivedAtCreation on every invoice that predates it — without this, an old invoice
+ *  edited for the first time after this fix shipped would still fall back to its current
+ *  (possibly receipt-inflated) amountReceived and hit the exact double-counting bug this fix
+ *  exists to prevent. For an invoice no Receipt has ever been applied to, the entire
+ *  amountReceived must genuinely be from creation time — safe to backfill exactly. For one WITH
+ *  receipts against it, the original creation-time split can't be recovered retroactively, so
+ *  this defaults to 0 rather than the inflated total: an undercount here only shifts slightly
+ *  more of the balance to Debtors on the next edit (a harmless presentational difference), while
+ *  an overcount would silently keep double-counting real cash, which is the actual danger. */
+async function migrateBackfillReceivedAtCreation() {
+  const [invoices, receipts] = await Promise.all([localDB.getAll('invoices'), localDB.getAll('receipts')]);
+  const invoicesWithReceipts = new Set();
+  receipts.forEach((r) => Object.keys(r.allocations || {}).forEach((invId) => invoicesWithReceipts.add(invId)));
+  for (const inv of invoices) {
+    if (inv.receivedAtCreation !== undefined) continue;
+    const safeValue = invoicesWithReceipts.has(inv.id) ? 0 : (inv.amountReceived || 0);
+    await localDB.put('invoices', { ...inv, receivedAtCreation: safeValue }, { noSync: true });
+  }
+}
+
+/** Mirror of migrateBackfillReceivedAtCreation, for purchases/payments — same bug, same fix,
+ *  same reasoning: a purchase with a Payment voucher applied against it can't have its original
+ *  creation-time paid amount recovered retroactively, so it defaults to 0 rather than the
+ *  current (payment-inflated) amountPaid. */
+async function migrateBackfillPaidAtCreation() {
+  const [purchases, payments] = await Promise.all([localDB.getAll('purchases'), localDB.getAll('payments')]);
+  const purchasesWithPayments = new Set();
+  payments.forEach((p) => Object.keys(p.allocations || {}).forEach((billId) => purchasesWithPayments.add(billId)));
+  for (const p of purchases) {
+    if (p.paidAtCreation !== undefined) continue;
+    const safeValue = purchasesWithPayments.has(p.id) ? 0 : (p.amountPaid || 0);
+    await localDB.put('purchases', { ...p, paidAtCreation: safeValue }, { noSync: true });
   }
 }
 
@@ -4232,7 +4322,7 @@ async function renderInvoiceForm(container, invoiceId, duplicateData) {
       <div class="card">
         <div class="section-title">Payment Received</div>
         <div class="form-row cols-2">
-          <div class="field"><label>Advance / Amount Received</label><input id="f-received" type="number" value="${existing?.amountReceived || 0}" /></div>
+          <div class="field"><label>Advance / Amount Received${existing ? ' <span style="font-weight:400;color:var(--slate-500)">(record further payments via Receipts, not here)</span>' : ''}</label><input id="f-received" type="number" value="${existing?.amountReceived || 0}" ${existing ? 'disabled' : ''} /></div>
           <div class="field"><label>Status</label>
             <select id="f-status">
               ${['Draft','Confirmed','Paid'].map((s) => `<option ${existing ? (existing.status === s ? 'selected' : '') : (s === 'Confirmed' ? 'selected' : '')}>${s}</option>`).join('')}
@@ -4386,8 +4476,8 @@ async function renderInvoiceForm(container, invoiceId, duplicateData) {
     container.querySelector('#f-manual-voucher-no').value = existing?.invoiceNo || await previewNextNumber('SalesInvoice');
   });
 
-  container.querySelector('#save-draft').addEventListener('click', () => saveInvoice('Draft'));
-  container.querySelector('#save-post').addEventListener('click', () => saveInvoice(container.querySelector('#f-status').value || 'Confirmed'));
+  container.querySelector('#save-draft').addEventListener('click', guardDoubleSubmit(container.querySelector('#save-draft'), () => saveInvoice('Draft')));
+  container.querySelector('#save-post').addEventListener('click', guardDoubleSubmit(container.querySelector('#save-post'), () => saveInvoice(container.querySelector('#f-status').value || 'Confirmed')));
   container.querySelector('#delete-invoice')?.addEventListener('click', () => deleteInvoiceById(container, existing.id, () => renderSalesInvoiceList(container)));
 
   async function saveInvoice(status) {
@@ -4425,7 +4515,16 @@ async function renderInvoiceForm(container, invoiceId, duplicateData) {
       freight: round2(totals.freight),
       taxTotal: round2(totals.taxTotal),
       grandTotal: round2(totals.grand),
-      amountReceived: Number(container.querySelector('#f-received').value) || 0,
+      amountReceived: existing ? (existing.amountReceived || 0) : (Number(container.querySelector('#f-received').value) || 0),
+      // Tracks ONLY the portion received at the moment of creating THIS invoice — baked into its
+      // own voucher (Dr Cash/Bank) at that time. Deliberately separate from amountReceived above,
+      // which also grows every time a separate Receipt voucher is later applied against this
+      // invoice (see the Receipt save handler) — a Receipt has its own independent ledger
+      // posting, so re-posting THIS invoice using the current (post-receipt) amountReceived would
+      // bake that same money into this voucher a second time, permanently overstating Cash/Bank
+      // and understating Debtors on every future edit. Frozen after creation for exactly that
+      // reason — an edit must never change how much this invoice's own voucher treats as received.
+      receivedAtCreation: existing ? (existing.receivedAtCreation ?? 0) : (Number(container.querySelector('#f-received').value) || 0),
       status
     };
 
@@ -4466,7 +4565,11 @@ async function postInvoiceToLedger(inv) {
   if (inv.invoiceType !== 'service' && !sales) throw new Error('Chart of Accounts is missing the Sales ledger.');
 
   const receiptLedger = inv.paymentMode === 'Cash' ? cash : inv.paymentMode === 'Bank' || inv.paymentMode === 'UPI' || inv.paymentMode === 'Card' || inv.paymentMode === 'Cheque' ? bank : null;
-  const received = inv.amountReceived || 0;
+  // Deliberately NOT inv.amountReceived here — see receivedAtCreation's own comment on the
+  // invoice record for why using the cumulative total (which grows every time a separate Receipt
+  // voucher is applied against this invoice) would double-count that money on every subsequent
+  // edit of this invoice, forever, silently.
+  const received = inv.receivedAtCreation ?? inv.amountReceived ?? 0;
   const onCredit = round2(inv.grandTotal - received);
 
   const lines = [];
@@ -4511,6 +4614,21 @@ async function postInvoiceToLedger(inv) {
 }
 
 async function adjustInventory(inv) {
+  // Reverse any item this invoice previously posted stock against that's no longer in the
+  // current line list — without this, removing a line entirely during an edit (not just
+  // changing its quantity) left that item's stock permanently reduced forever, since the loop
+  // below only ever visits CURRENT lines and has no way to know an item used to be here.
+  const currentItemIds = new Set(inv.lines.map((l) => l.itemId));
+  const allItems = await localDB.getAll('items');
+  for (const item of allItems) {
+    if (item.__lastPostedQty && item.__lastPostedQty[inv.id] !== undefined && !currentItemIds.has(item.id)) {
+      item.openingStock = round2((item.openingStock || 0) + item.__lastPostedQty[inv.id]);
+      const tracking = { ...item.__lastPostedQty };
+      delete tracking[inv.id];
+      item.__lastPostedQty = tracking;
+      await localDB.put('items', item);
+    }
+  }
   for (const l of inv.lines) {
     const item = await localDB.get('items', l.itemId);
     if (!item) continue;
@@ -5198,7 +5316,7 @@ async function renderPurchaseForm(container, purchaseId) {
       <div class="card">
         <div class="section-title">Payment Made</div>
         <div class="form-row cols-2">
-          <div class="field"><label>Amount Paid</label><input id="f-paid" type="number" value="${existing?.amountPaid || 0}" /></div>
+          <div class="field"><label>Amount Paid${existing ? ' <span style="font-weight:400;color:var(--slate-500)">(record further payments via Payments, not here)</span>' : ''}</label><input id="f-paid" type="number" value="${existing?.amountPaid || 0}" ${existing ? 'disabled' : ''} /></div>
           <div class="field"><label>Status</label>
             <select id="f-status">${['Draft','Confirmed','Paid'].map((s) => `<option ${existing ? (existing.status === s ? 'selected' : '') : (s === 'Confirmed' ? 'selected' : '')}>${s}</option>`).join('')}</select>
           </div>
@@ -5293,8 +5411,8 @@ async function renderPurchaseForm(container, purchaseId) {
   container.querySelector('#f-add-discount').addEventListener('input', recalcTotals);
   container.querySelector('#f-freight').addEventListener('input', recalcTotals);
   container.querySelector('#back-to-list').addEventListener('click', () => renderPurchaseList(container));
-  container.querySelector('#save-draft').addEventListener('click', () => savePurchase('Draft'));
-  container.querySelector('#save-post').addEventListener('click', () => savePurchase(container.querySelector('#f-status').value || 'Confirmed'));
+  container.querySelector('#save-draft').addEventListener('click', guardDoubleSubmit(container.querySelector('#save-draft'), () => savePurchase('Draft')));
+  container.querySelector('#save-post').addEventListener('click', guardDoubleSubmit(container.querySelector('#save-post'), () => savePurchase(container.querySelector('#f-status').value || 'Confirmed')));
   container.querySelector('#delete-purchase')?.addEventListener('click', () => deletePurchaseById(container, existing.id, () => renderPurchaseList(container)));
 
   async function savePurchase(status) {
@@ -5320,7 +5438,12 @@ async function renderPurchaseForm(container, purchaseId) {
       lines: lines.filter((l) => l.itemId),
       subtotal: round2(totals.subtotal), additionalDiscount: round2(totals.addDiscount),
       freight: round2(totals.freight), taxTotal: round2(totals.taxTotal), grandTotal: round2(totals.grand),
-      amountPaid: Number(container.querySelector('#f-paid').value) || 0,
+      amountPaid: existing ? (existing.amountPaid || 0) : (Number(container.querySelector('#f-paid').value) || 0),
+      // See invoice.receivedAtCreation for the full reasoning — same bug, mirrored: a separate
+      // Payment voucher applied against this purchase after creation has its own independent
+      // ledger posting, so re-posting this purchase using the current (post-payment) amountPaid
+      // would double-count that cash outflow on every future edit. Frozen after creation.
+      paidAtCreation: existing ? (existing.paidAtCreation ?? 0) : (Number(container.querySelector('#f-paid').value) || 0),
       status
     };
 
@@ -5347,7 +5470,7 @@ async function postPurchaseToLedger(p) {
   if (!creditors || !purchasesL) throw new Error('Chart of Accounts is missing Purchases or Accounts Payable ledger.');
 
   const payLedger = p.paymentMode === 'Cash' ? cash : ['Bank', 'UPI', 'Card', 'Cheque'].includes(p.paymentMode) ? bank : null;
-  const paid = p.amountPaid || 0;
+  const paid = p.paidAtCreation ?? p.amountPaid ?? 0;
   const onCredit = round2(p.grandTotal - paid);
   const flip = p.isReturn; // Purchase Return flips the normal debit/credit sides
 
@@ -5368,6 +5491,20 @@ async function postPurchaseToLedger(p) {
 }
 
 async function adjustInventoryForPurchase(p) {
+  // Same fix as adjustInventory above — reverse any item this purchase previously affected
+  // that's no longer in the current line list, before applying current lines.
+  const currentItemIds = new Set(p.lines.map((l) => l.itemId));
+  const allItems = await localDB.getAll('items');
+  const sign0 = p.isReturn ? -1 : 1;
+  for (const item of allItems) {
+    if (item.__lastPurchaseQty && item.__lastPurchaseQty[p.id] !== undefined && !currentItemIds.has(item.id)) {
+      item.openingStock = round2((item.openingStock || 0) - sign0 * item.__lastPurchaseQty[p.id]);
+      const tracking = { ...item.__lastPurchaseQty };
+      delete tracking[p.id];
+      item.__lastPurchaseQty = tracking;
+      await localDB.put('items', item);
+    }
+  }
   for (const l of p.lines) {
     const item = await localDB.get('items', l.itemId);
     if (!item) continue;
@@ -5645,7 +5782,7 @@ async function renderQuotationList(container) {
   });
   container.querySelector('#new-quotation').addEventListener('click', () => renderQuotationForm(container));
   container.querySelectorAll('[data-open]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); renderQuotationForm(container, b.dataset.open); }));
-  container.querySelectorAll('[data-convert]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); convertToInvoice(container, b.dataset.convert); }));
+  container.querySelectorAll('[data-convert]').forEach((b) => b.addEventListener('click', guardDoubleSubmit(b, (e) => { e.stopPropagation(); return convertToInvoice(container, b.dataset.convert); })));
   container.querySelectorAll('[data-print]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); printQuotation(b.dataset.print); }));
   container.querySelectorAll('[data-share]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); shareQuotation(b.dataset.share); }));
   container.querySelectorAll('[data-delete]').forEach((b) => b.addEventListener('click', async (e) => {
@@ -6638,7 +6775,8 @@ async function renderReceiptForm(container) {
   container.querySelector('#f-total').addEventListener('input', recalc);
   container.querySelector('#back-to-list').addEventListener('click', () => renderReceiptList(container));
 
-  container.querySelector('#save-receipt').addEventListener('click', async () => {
+  const saveReceiptBtn = container.querySelector('#save-receipt');
+  saveReceiptBtn.addEventListener('click', guardDoubleSubmit(saveReceiptBtn, async () => {
     const customerId = container.querySelector('#customer-mount select')?.value;
     if (!customerId) { toast('Please select a customer', 'error'); return; }
     const customer = await localDB.get('customers', customerId);
@@ -6702,7 +6840,7 @@ async function renderReceiptForm(container) {
       shareFn: () => shareReceipt(receipt.id),
       onDone: () => renderReceiptList(container)
     });
-  });
+  }));
 }
 
 function round2(n) { return Math.round((Number(n) + Number.EPSILON) * 100) / 100; }
@@ -7034,7 +7172,8 @@ async function renderPaymentForm(container) {
   container.querySelector('#f-total').addEventListener('input', recalc);
   container.querySelector('#back-to-list').addEventListener('click', () => renderPaymentList(container));
 
-  container.querySelector('#save-payment').addEventListener('click', async () => {
+  const savePaymentBtn = container.querySelector('#save-payment');
+  savePaymentBtn.addEventListener('click', guardDoubleSubmit(savePaymentBtn, async () => {
     const supplierId = container.querySelector('#supplier-mount select')?.value;
     if (!supplierId) { toast('Please select a supplier', 'error'); return; }
     const supplier = await localDB.get('suppliers', supplierId);
@@ -7088,7 +7227,7 @@ async function renderPaymentForm(container) {
       shareFn: () => sharePayment(payment.id),
       onDone: () => renderPaymentList(container)
     });
-  });
+  }));
 }
 
 function round2(n) { return Math.round((Number(n) + Number.EPSILON) * 100) / 100; }
@@ -17060,6 +17199,23 @@ async function guardMassDeleteAction(actionLabel) {
  *  refused. Every destructive handler in the app should await this first, before its confirm()
  *  dialog — "serious security" for accounting data starts with not letting just anyone reverse
  *  a posted entry. */
+/** Wraps a save/submit click handler so a double-tap (very common on mobile) can't fire it
+ *  twice concurrently — without this, two near-simultaneous taps on a "Save Invoice" button run
+ *  the whole save function twice in parallel, creating two real, separately-numbered invoices
+ *  (and posting the sale to the ledger twice) from what the person experienced as one tap. The
+ *  button re-enables itself once the handler finishes, whether it succeeded or threw. */
+function guardDoubleSubmit(button, handler) {
+  return async (...args) => {
+    if (button.disabled) return;
+    button.disabled = true;
+    try {
+      await handler(...args);
+    } finally {
+      button.disabled = false;
+    }
+  };
+}
+
 async function guardDestructiveAction(actionLabel) {
   const user = await getCurrentUser();
   if (!DESTRUCTIVE_ACTION_ROLES.includes(user.role)) {
@@ -19592,6 +19748,8 @@ async function boot() {
     await migrateBackfillMissingLedgerGroupIds();
     await migrateAddCashInTransitLedger();
     await migrateDeduplicateSystemLedgers();
+    await migrateBackfillReceivedAtCreation();
+    await migrateBackfillPaidAtCreation();
     await migrateLedgersToGroupIds();
     // Local admin/password seeding removed — Supabase is the login source now.
 
