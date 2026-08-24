@@ -6092,11 +6092,12 @@ async function printQuotation(quotationId) {
   const hasFreight = q.freight > 0;
   const isService = q.quotationType === 'service';
   await printDocument({
-    docType: isService ? 'Service Quotation' : 'Sales Quotation',
+    docType: 'Quotation',
     docNumber: q.quotationNo,
     date: q.date,
     meta: [['Customer', q.customerName], ['Valid Until', q.validUntil ? fmtDate(q.validUntil) : '—'], ['Status', q.status]],
     bodyHtml: `
+      <div style="text-align:center;font-size:22px;font-weight:700;letter-spacing:0.08em;color:#0F1B2D;margin-bottom:18px">QUOTATION</div>
       <table><thead><tr><th>${isService ? 'Service' : 'Item'}</th>${isService ? '<th>Description</th>' : ''}<th>Qty</th><th>Rate</th>${!isService ? '<th>Disc %</th>' : ''}${hasTax ? '<th>Tax %</th>' : ''}<th class="num">Amount</th></tr></thead>
       <tbody>${q.lines.map((l) => `<tr><td>${l.itemName}</td>${isService ? `<td>${l.description || ''}</td>` : ''}<td>${l.qty}</td><td>${fmtMoney(l.rate)}</td>${!isService ? `<td>${l.discountPct}%</td>` : ''}${hasTax ? `<td>${l.taxPct}%</td>` : ''}<td class="num">${fmtMoney(lineAmount(l))}</td></tr>`).join('')}</tbody></table>
       <div class="totals">
@@ -6105,8 +6106,8 @@ async function printQuotation(quotationId) {
         ${hasTax ? `<div><span>Tax</span><span>${fmtMoney(q.taxTotal)}</span></div>` : ''}
         <div><b>Grand Total</b><b>${fmtMoney(q.grandTotal)}</b></div>
       </div>
-      ${q.terms ? `<div style="margin-top:16px"><b>Terms &amp; Conditions:</b><br/>${q.terms}</div>` : ''}
-      ${q.notes ? `<div style="margin-top:10px"><b>Notes:</b><br/>${q.notes}</div>` : ''}`
+      ${q.terms ? `<div style="margin-top:16px"><b>Terms &amp; Conditions:</b><br/><span style="white-space:pre-wrap">${q.terms}</span></div>` : ''}
+      ${q.notes ? `<div style="margin-top:10px"><b>Notes:</b><br/><span style="white-space:pre-wrap">${q.notes}</span></div>` : ''}`
   });
 }
 
