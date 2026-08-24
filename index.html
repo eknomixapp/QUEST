@@ -11479,7 +11479,7 @@ async function buildContractHtml(contract, brand) {
       <div class="section">
         <h3>10. Acceptance</h3>
         <div class="signature">
-          <div><b>Client</b><div class="signbox">Authorized Signature &amp; Seal</div></div>
+          <div><b>${contract.clientName || 'Client'}</b><div class="signbox">Authorized Signature &amp; Seal</div></div>
           <div><b>${brand.name}</b><div class="signbox">Authorized Signature &amp; Company Seal</div></div>
         </div>
       </div>
