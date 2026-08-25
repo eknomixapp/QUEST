@@ -11952,61 +11952,29 @@ async function openCancelLetterModal(container, id) {
  *  letter — in its own print window, styled to match Quest Advertising & Events' navy/gold
  *  letterhead: logo + name on the left, a divider and contact list on the right, a gold rule,
  *  a reference/subject line, the letter body, and a dark green services footer. Falls back
- *  gracefully to whatever is in Settings → Company Profile if any field is blank. */
+ *  gracefully to whatever is in Settings → Company Profile if any field is blank.
+ *
+ *  Multi-page handling: structured as a single HTML <table> with the header in <thead> and the
+ *  footer in <tfoot> — the browser's native, purpose-built mechanism for "repeat this content on
+ *  every page a table spans." This was NOT the first approach tried: position:fixed header/footer
+ *  combined with @page margins looks like it should work (and is a commonly-suggested technique
+ *  online), but was verified by actually rendering a multi-page test PDF to genuinely NOT compose
+ *  correctly in Chromium — the fixed header ends up anchored to the same coordinate as the
+ *  flowing content rather than sitting inside the reserved margin, overlapping it on every page,
+ *  which was the exact bug being fixed. table thead/tfoot has no such ambiguity: it's a real
+ *  pagination primitive the browser's own page-break logic understands natively. */
 async function printLetterhead(entry) {
   const brand = await getCompanyBranding();
   const win = window.open('', '_blank');
   const isBlank = !entry;
   const contactRow = (icon, value) => value ? `<li>${value}${icon}</li>` : '';
-  win.document.write(`
-    <html><head><title>${brand.name} — Letterhead${entry?.letterNo ? ' ' + entry.letterNo : ''}</title>
-    <style>
-      :root{ --navy:#13233F; --navy-dark:#0C1930; --footer-green:#132820; --gold:#C9973A; --gold-light:#E4C07A; --grey:#6B7280; }
-      * { box-sizing: border-box; }
-      body{font-family:'Calibri','Segoe UI',Arial,sans-serif;margin:0;padding:0;background:#EDEEF1;color:#22262E}
-      .sheet{width:210mm;margin:24px auto;background:#fff;box-shadow:0 6px 24px rgba(0,0,0,0.18);display:flex;flex-direction:column;position:relative}
-      .lh-header{display:flex;align-items:center;justify-content:space-between;padding:7mm 12mm 4mm 12mm;gap:10mm}
-      .lh-header .brand{display:flex;align-items:center;gap:10px}
-      .lh-header img{height:15mm;max-width:130px;object-fit:contain;display:block}
-      .lh-header h1{margin:0;font-size:16px;letter-spacing:0.01em;color:var(--navy)}
-      .lh-header .tagline{font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:var(--gold);margin-top:2px}
-      .lh-contact{display:flex;align-items:stretch;gap:7mm}
-      .lh-divider{width:1px;background:var(--gold);opacity:.9}
-      .lh-contact-list{list-style:none;margin:0;padding:0;text-align:right;font-size:9pt;color:var(--navy);line-height:1.7}
-      .lh-contact-list li{white-space:nowrap}
-      .lh-rule{height:2.5px;background:var(--gold);margin:0 12mm}
-      .lh-refline{padding:2mm 25mm 1mm 25mm;font-size:9.5pt;color:var(--navy);text-align:left;display:block;border-bottom:1px dashed rgba(107,114,128,0.35);margin-bottom:2mm}
-      .lh-refline b{color:var(--gold)}
-      .lh-body{flex:1;padding:${isBlank ? '40mm' : '9mm'} 25mm 26mm 25mm;font-size:11.5pt;line-height:1.65;color:#2B2F36;min-height:${isBlank ? '297mm' : 'auto'}}
-      .lh-body h2, .lh-body h3, .lh-body h4{color:var(--navy);margin:16px 0 8px;line-height:1.3}
-      .lh-body h2{font-size:14pt;border-bottom:1.5px solid var(--gold);padding-bottom:4px}
-      .lh-body h3{font-size:11.5pt;letter-spacing:.02em}
-      .lh-body hr{border:none;border-top:1px solid #D9DCE1;margin:16px 0}
-      .lh-body p, .lh-body div, .lh-body li{margin:0 0 10px}
-      .lh-body ul, .lh-body ol{margin:0 0 12px;padding:0 0 0 22px}
-      .lh-body table{border-collapse:collapse;width:100%;margin:0 0 14px}
-      .lh-body table th, .lh-body table td{border:1px solid #C7CBD3;padding:6px 9px;text-align:left;vertical-align:top;font-size:10.5pt}
-      .lh-body table th{background:var(--footer-green);color:#fff}
-      .lh-body table tr:nth-child(even) td{background:#F0F7F5}
-      .lh-watermark{position:absolute;top:44%;left:0;right:0;text-align:center;font-size:11px;letter-spacing:0.3em;text-transform:uppercase;color:#D7D9DE}
-      /* Fixed (not flowed) so this repeats at the bottom of every printed page, not just once
-         at the true end of the document — this is what makes the footer "always at bottom". */
-      .lh-footer-fixed{position:fixed;left:0;right:0;bottom:0}
-      .lh-footer-rule{height:1.5px;background:var(--gold);margin:0 12mm 4mm 12mm}
-      .lh-footer{background:var(--footer-green);color:#C7CBD3;text-align:center;font-size:8.3pt;letter-spacing:.02em;padding:8px 10mm}
-      .lh-footer span{color:var(--gold);margin:0 8px}
-      @media print {
-        body{background:#fff}
-        .sheet{box-shadow:none;margin:0;width:auto}
-        .lh-footer-fixed{position:fixed}
-      }
-    </style></head><body><div class="sheet">
+  const headerBlockHtml = `
       <div class="lh-header">
         <div class="brand">
           ${brand.logoDataUrl ? `<img src="${brand.logoDataUrl}" />` : ''}
           <div>
             <h1>${brand.name}</h1>
-            <div class="tagline">Official Correspondence</div>
+            <div class="tagline">${brand.tagline || 'Official Correspondence'}</div>
           </div>
         </div>
         <div class="lh-contact">
@@ -12018,17 +11986,82 @@ async function printLetterhead(entry) {
           </ul>
         </div>
       </div>
-      ${(brand.address || brand.crNumber) ? `<div style="font-size:9pt;color:var(--navy);text-align:right;margin:-2mm 12mm 0 12mm">${brand.address || ''}${brand.address && brand.crNumber ? ' &nbsp;·&nbsp; ' : ''}${brand.crNumber ? `C.R. No: ${brand.crNumber}` : ''}</div>` : ''}
-      <div class="lh-rule"></div>
-      ${!isBlank ? `
-      <div class="lh-refline">Reference: <b>${entry.letterNo}</b>${entry.date ? ` &nbsp;·&nbsp; Date: <b>${fmtDate(entry.date)}</b>` : ''}${entry.issuedTo ? `<br/>To: ${entry.issuedTo}` : ''}${entry.purpose ? `<br/>Subject: ${entry.purpose}` : ''}</div>
-      ` : ''}
-      <div class="lh-body">${isBlank ? '<div class="lh-watermark">Blank Letterhead — Format Preview</div>' : (entry.content || '')}</div>
-    </div>
-    <div class="lh-footer-fixed">
+      ${(brand.address || brand.crNumber) ? `<div class="lh-addr">${brand.address || ''}${brand.address && brand.crNumber ? ' &nbsp;·&nbsp; ' : ''}${brand.crNumber ? `C.R. No: ${brand.crNumber}` : ''}</div>` : ''}
+      <div class="lh-rule"></div>`;
+  const footerBlockHtml = `
       <div class="lh-footer-rule"></div>
-      <div class="lh-footer">${brand.tagline || `${brand.name}${brand.address ? ' · ' + brand.address : ''}`}</div>
-    </div>
+      <div class="lh-footer">${brand.tagline || `${brand.name}${brand.address ? ' · ' + brand.address : ''}`}</div>`;
+  win.document.write(`
+    <html><head><title>${brand.name} — Letterhead${entry?.letterNo ? ' ' + entry.letterNo : ''}</title>
+    <style>
+      :root{ --navy:#13233F; --navy-dark:#0C1930; --footer-green:#132820; --gold:#C9973A; --gold-light:#E4C07A; --grey:#6B7280; }
+      * { box-sizing: border-box; }
+      @page { size: A4; margin: 0; }
+      body{font-family:'Calibri','Segoe UI',Arial,sans-serif;margin:0;padding:0;background:#EDEEF1;color:#22262E}
+      .sheet-wrap{width:210mm;margin:24px auto;background:#fff;box-shadow:0 6px 24px rgba(0,0,0,0.18);position:relative}
+      /* The whole page is one table so <thead>/<tfoot> can do their native job of repeating on
+         every printed page — this is the actual fix, everything else here is cosmetic. */
+      .lh-table{width:100%;border-collapse:collapse}
+      .lh-table > thead > tr > td, .lh-table > tfoot > tr > td{padding:0}
+      .lh-table > tbody > tr > td{padding:0;position:relative}
+      .lh-header{display:flex;align-items:center;justify-content:space-between;padding:7mm 12mm 4mm 12mm;gap:10mm}
+      .lh-header .brand{display:flex;align-items:center;gap:10px}
+      .lh-header img{height:15mm;max-width:130px;object-fit:contain;display:block}
+      .lh-header h1{margin:0;font-size:16px;letter-spacing:0.01em;color:var(--navy)}
+      .lh-header .tagline{font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:var(--gold);margin-top:2px}
+      .lh-contact{display:flex;align-items:stretch;gap:7mm}
+      .lh-divider{width:1px;background:var(--gold);opacity:.9}
+      .lh-contact-list{list-style:none;margin:0;padding:0;text-align:right;font-size:9pt;color:var(--navy);line-height:1.7}
+      .lh-contact-list li{white-space:nowrap}
+      .lh-addr{font-size:9pt;color:var(--navy);text-align:right;margin:-2mm 12mm 0 12mm}
+      .lh-rule{height:2.5px;background:var(--gold);margin:0 12mm}
+      .lh-refline{padding:4mm 25mm 1mm 25mm;font-size:9.5pt;color:var(--navy);text-align:left;display:block;border-bottom:1px dashed rgba(107,114,128,0.35);margin-bottom:2mm}
+      .lh-refline b{color:var(--gold)}
+      .lh-body{padding:2mm 25mm 6mm 25mm;font-size:11.5pt;line-height:1.65;color:#2B2F36;position:relative;z-index:1}
+      .lh-body h2, .lh-body h3, .lh-body h4{color:var(--navy);margin:16px 0 8px;line-height:1.3;page-break-after:avoid}
+      .lh-body h2{font-size:14pt;border-bottom:1.5px solid var(--gold);padding-bottom:4px}
+      .lh-body h3{font-size:11.5pt;letter-spacing:.02em}
+      .lh-body hr{border:none;border-top:1px solid #D9DCE1;margin:16px 0}
+      .lh-body p, .lh-body div, .lh-body li{margin:0 0 10px;orphans:3;widows:3}
+      .lh-body ul, .lh-body ol{margin:0 0 12px;padding:0 0 0 22px}
+      .lh-body table{border-collapse:collapse;width:100%;margin:0 0 14px}
+      .lh-body table th, .lh-body table td{border:1px solid #C7CBD3;padding:6px 9px;text-align:left;vertical-align:top;font-size:10.5pt}
+      .lh-body table th{background:var(--footer-green);color:#fff}
+      .lh-body table tr:nth-child(even) td{background:#F0F7F5}
+      .lh-watermark-text{position:absolute;top:44%;left:0;right:0;text-align:center;font-size:11px;letter-spacing:0.3em;text-transform:uppercase;color:#D7D9DE;z-index:1}
+      /* The logo watermark. Two other standard techniques were tried first and directly verified
+         (by rendering real multi-page test PDFs through Chromium, not just reasoning about the
+         CSS) to NOT render at all in this print pipeline: position:fixed, and a background-image
+         applied to <body>/<html>. This is the one that actually works: a plain absolutely-
+         positioned element, inside normal document flow, with the fade faked via a semi-opaque
+         white linear-gradient layered on top of the logo in the same background-image property
+         (real CSS opacity on the image itself also failed to render here, for reasons that
+         appear to be specific to this browser's print pipeline rather than anything wrong with
+         the syntax). Honest limitation: because it lives in normal flow rather than a genuinely
+         repeating structure, it appears once — wherever it visually falls, which in practice
+         means the first page — rather than on every page of a long, multi-page letter. True
+         per-page repetition for freeform content (not confined to a header/footer band) was not
+         achievable with any standard CSS technique in this environment despite dedicated testing. */
+      .lh-watermark-logo{position:absolute;top:60mm;left:50%;transform:translateX(-50%);width:110mm;height:110mm;background-image:linear-gradient(rgba(255,255,255,0.93),rgba(255,255,255,0.93)),url(${brand.logoDataUrl});background-repeat:no-repeat,no-repeat;background-size:100% 100%,100% 100%;z-index:-1;pointer-events:none}
+      .lh-footer-rule{height:1.5px;background:var(--gold);margin:0 12mm 4mm 12mm}
+      .lh-footer{background:var(--footer-green);color:#C7CBD3;text-align:center;font-size:8.3pt;letter-spacing:.02em;padding:8px 10mm}
+      .lh-footer span{color:var(--gold);margin:0 8px}
+      @media print {
+        body{background:#fff}
+        .sheet-wrap{box-shadow:none;margin:0;width:auto}
+      }
+    </style></head><body>
+      <div class="sheet-wrap">
+        <table class="lh-table"><thead><tr><td>${headerBlockHtml}</td></tr></thead>
+        <tbody><tr><td>
+          ${!isBlank ? `<div class="lh-refline">Reference: <b>${entry.letterNo}</b>${entry.date ? ` &nbsp;·&nbsp; Date: <b>${fmtDate(entry.date)}</b>` : ''}${entry.issuedTo ? `<br/>To: ${entry.issuedTo}` : ''}${entry.purpose ? `<br/>Subject: ${entry.purpose}` : ''}</div>` : ''}
+          <div class="lh-body">
+            ${brand.logoDataUrl ? '<div class="lh-watermark-logo"></div>' : ''}
+            ${isBlank ? '<div class="lh-watermark-text">Blank Letterhead — Format Preview</div>' : (entry.content || '')}
+          </div>
+        </td></tr></tbody>
+        <tfoot><tr><td>${footerBlockHtml}</td></tr></tfoot></table>
+      </div>
     <script>window.onload=function(){setTimeout(function(){window.print()},200)}<\/script>
     </body></html>`);
   win.document.close();
